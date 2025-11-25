@@ -1,0 +1,12 @@
+/.deployment
+/.funcignore
+/.venv
+/.vscode
+/config.json
+/Discord Bot
+/exports
+/items_table.json
+/osbotdrive-b0e15f00170f.json
+/runner.py
+/start.bat
+/weekly_logs
