@@ -307,7 +307,7 @@ def refresh_images_from_drive():
 VALID_ROUTES = [
     "Rio Barakawa", "Academia Mofunoakabe", "El Cluster", "Templo Fudakudai", "Bosque de Onigashima", "Crimson Light District",
     "Academia Saint George", "The Fae Parliament", "Everything Hill", "St. Peter Cathedral", "Thames River", "The Botanical Forest",
-    "Academia St Peter", "Gehenna Door", "Abandoned Colosseum", "Elysian Garden", "Central Church", "Hopeless River"
+    "Academia St Peter", "Gehenna Door", "Abandoned Colosseum", "Elysian Garden", "Central Church", "Hopeless River", "Toy Factory"
 ]
 
 ROUTE_ALIASES = {
@@ -421,6 +421,14 @@ ROUTE_ALIASES = {
         "río sin esperanza",
         "rio sin esperanza",
         "Hopeless"
+    ],
+    "Toy Factory": [
+        "toy factory",
+        "fábrica de juguetes",
+        "fabrica de juguetes",
+        "la fábrica de juguetes",
+        "jugeteria",
+        "Santa's little secret stash of the good stuff",
     ]
 }
 
