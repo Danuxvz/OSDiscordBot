@@ -3,7 +3,7 @@
 /.venv
 /.vscode
 /config.json
-/Discord Bot/.env
+/DiscordBot/.env
 /exports
 /items_table.json
 /osbotdrive-b0e15f00170f.json
