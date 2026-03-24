@@ -7,6 +7,7 @@ import random
 import requests
 import asyncio
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo  # Python 3.9+
 import discord
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
@@ -64,8 +65,14 @@ bot = commands.Bot(command_prefix=get_prefix, intents=intents, case_insensitive=
 
 
 # -----------------------------
-# Helper functions
+# Helper functions (timezone)
 # -----------------------------
+LOCAL_TZ = ZoneInfo("America/New_York")
+
+def get_local_now():
+    """Return current time in America/New_York timezone."""
+    return datetime.now(LOCAL_TZ)
+
 def utc_now_iso():
     return datetime.now(timezone.utc).isoformat()
 
@@ -74,10 +81,6 @@ def parse_dt(value: str):
         return datetime.fromisoformat(value)
     except Exception:
         return datetime.min.replace(tzinfo=timezone.utc)
-
-def get_current_week_start_str():
-    start, _ = get_current_week_range()
-    return start.date().isoformat()
 
 
 # -----------------------------
@@ -220,18 +223,42 @@ async def config_sync_loop():
 # Helper functions (continued)
 # -----------------------------
 def get_current_week_range():
-    """Return start and end dates of current week (Mon-Sun) using local time."""
-    now = datetime.now()
+    """Return start and end dates of current week (Mon-Sun) in local time."""
+    now = get_local_now()
     start = now - timedelta(days=now.weekday())  # Monday
     start = start.replace(hour=0, minute=0, second=0, microsecond=0)
     end = start + timedelta(days=6)
     return start, end
+
+def get_current_week_start_str():
+    start, _ = get_current_week_range()
+    return start.date().isoformat()
 
 def get_weekly_log_path(start, guild_id):
     """Return path for weekly log file for a given week start and guild."""
     os.makedirs(LOG_DIR, exist_ok=True)
     filename = f"{guild_id}_{start.strftime('%Y%m%d')}.json"
     return os.path.join(LOG_DIR, filename)
+
+async def load_weekly_log_from_db(guild_id, week_start_str):
+    """Try to load weekly log from Supabase; return dict or None."""
+    if not supabase:
+        return None
+
+    try:
+        res = supabase.table("weekly_logs") \
+            .select("data") \
+            .eq("guild_id", str(guild_id)) \
+            .eq("week_start", week_start_str) \
+            .maybe_single() \
+            .execute()
+
+        if res.data and res.data.get("data"):
+            return res.data["data"]
+    except Exception as e:
+        print(f"[SUPABASE] Failed to load weekly log: {e}")
+
+    return None
 
 def sanitize_text(text):
     """Remove emojis but preserve newlines and basic formatting."""
@@ -725,7 +752,7 @@ async def scan_guild(guild_id, force=False):
     """
     cfg = get_guild_cfg(guild_id)
     scan_hour = cfg.get("scan_hour", 17)
-    now = datetime.now()
+    now = get_local_now()
     if not force:
         if scan_hour is None:
             # scans disabled for this guild
@@ -752,10 +779,14 @@ async def scan_guild(guild_id, force=False):
         start, end = get_current_week_range()
         week_start_str = start.date().isoformat()
         log_path = get_weekly_log_path(start, guild_id)
-        weekly_log = {}
-        if os.path.exists(log_path):
+
+        # Try to load from Supabase first, fallback to local file
+        weekly_log = await load_weekly_log_from_db(guild_id, week_start_str)
+        if not weekly_log and os.path.exists(log_path):
             with open(log_path, "r", encoding="utf-8") as f:
                 weekly_log = json.load(f)
+        elif not weekly_log:
+            weekly_log = {}
 
         thread_name = f"BUSQUEDAS {start.strftime('%d %b')} - {end.strftime('%d %b')}"
         # Active threads are in channel.threads (property)
@@ -811,7 +842,7 @@ async def scan_guild(guild_id, force=False):
                     "results": [],
                     "invalid": invalid_routes,
                     "delivered": False,
-                    "timestamp": datetime.now().isoformat()
+                    "timestamp": get_local_now().isoformat()
                 }
                 with open(log_path, "w", encoding="utf-8") as f:
                     json.dump(weekly_log, f, indent=4, ensure_ascii=False)
@@ -856,7 +887,7 @@ async def scan_guild(guild_id, force=False):
                     "results": [],
                     "delivered": False,
                     "error": "Unrecognized route(s)",
-                    "timestamp": datetime.now().isoformat()
+                    "timestamp": get_local_now().isoformat()
                 }
                 with open(log_path, "w", encoding="utf-8") as f:
                     json.dump(weekly_log, f, indent=4, ensure_ascii=False)
@@ -936,7 +967,7 @@ async def scan_guild(guild_id, force=False):
                 "rutas": parsed["rutas"],
                 "results": results,
                 "delivered": True,
-                "timestamp": datetime.now().isoformat()
+                "timestamp": get_local_now().isoformat()
             }
 
             # periodically save (in case of long runs)
@@ -1003,7 +1034,7 @@ async def scan_guild(guild_id, force=False):
 # runs every hour and checks per-guild scan_hour
 @tasks.loop(minutes=60)
 async def scan_busquedas_thread():
-    now = datetime.now()
+    now = get_local_now()
     # iterate keys because we may mutate config while iterating
     for gid in list(config_cache.keys()):
         try:
@@ -1021,7 +1052,7 @@ async def scan_busquedas_thread():
 # check weekly thread creation per-guild (runs every hour)
 @tasks.loop(minutes=60)
 async def check_weekly_thread():
-    now = datetime.now()
+    now = get_local_now()
     start, end = get_current_week_range()
     current_week_str = start.strftime("%Y%m%d")
 
@@ -1088,6 +1119,7 @@ async def check_weekly_thread():
 async def on_ready():
     print(f"Logged in as {bot.user}!")
     await load_config_from_db()
+    await pull_updates_from_db()  # force config sync at startup
 
     config_sync_loop.start()
     check_weekly_thread.start()
@@ -1108,8 +1140,12 @@ async def on_command_error(ctx, error):
 # -----------------------------
 @bot.command()
 async def hour(ctx):
-    now = datetime.now()
-    await ctx.send(f"Current server time: {now.strftime('%Y-%m-%d %H:%M:%S')} (Hour = {now.hour})")
+    utc = datetime.now(timezone.utc)
+    local = get_local_now()
+    await ctx.send(
+        f"UTC: {utc.strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"Local: {local.strftime('%Y-%m-%d %H:%M:%S')}"
+    )
 
 @bot.command(aliases=["busquedas", "busqueda", "search", "setb", "busquedaschannel", "setsearch", "sb", "setbusquedas"])
 @commands.has_permissions(administrator=True)
@@ -1323,7 +1359,7 @@ async def help_command(ctx):
         value=(
             "**ping** — Verifica si el bot está en línea.\n"
             "**refresh** — Forzar la actualización de ítems desde Google Sheets y Drive.\n"
-            "**Remove** `[codigo]` — Elimina entradas procesadas para el un personaje.\n"
+            "**remove** `código` — Elimina entradas procesadas con ese código y sincroniza.\n"
             "**debug_logs** — Muestra cuántos registros hay en Supabase para esta semana.\n"
             "**push_logs** — Sube el archivo local weekly_logs a Supabase."
         ),
@@ -1375,15 +1411,15 @@ async def remove(ctx, codigo: str):
     removed_count = 0
 
     # -----------------------------
-    # 1) Remove from Supabase processed_users
+    # 1) Remove from Supabase processed_users (only entries with this codigo)
     # -----------------------------
     try:
-        res = supabase.table("processed_users") \
+        supabase.table("processed_users") \
             .delete() \
             .eq("guild_id", gid) \
             .eq("week_start", week) \
+            .eq("codigo", codigo) \
             .execute()
-
         await ctx.send(f"🧹 Removed entries with código `{codigo}` from processed_users.")
     except Exception as e:
         await ctx.send(f"❌ Supabase error: {e}")
@@ -1430,7 +1466,6 @@ async def remove(ctx, codigo: str):
             "data": data,
             "updated_at": utc_now_iso()
         }).execute()
-
         print("☁️ Weekly log synced to Supabase.")
     except Exception as e:
         print(f"❌ Failed to push weekly log: {e}")
@@ -1511,9 +1546,9 @@ async def item(ctx):
 
     PREFIX_MAP = {
         "AE": get_prefix("ae"),
-        "SB": get_prefix("sb"),
+        "SB": get_prefix("stat"),
         "HE": get_prefix("he"),
-        "AC": get_prefix("ac"),
+        "AC": get_prefix("armor"),
     }
 
     UNLOCK_MULTIPLIER = {
