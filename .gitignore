@@ -10,5 +10,5 @@
 /runner.py
 /start.bat
 /weekly_logs
-/_pycache_
-/services/_pycache_
+/DiscordBot/_pycache_
+/DiscordBot/services/_pycache_

@@ -695,12 +695,14 @@ class BotCommands(commands.Cog):
             if not row:
                 await ctx.send("❌ Item not found in unlocks.")
                 return
+
             # Build embed
             title = row.get("title") or row.get("name") or "Unknown"
             desc = row.get("description", "")
             typ = row.get("type", "Unknown")
             released = row.get("released", "true").lower() in ("true", "1", "yes")
-            mult = {"AE":2, "SB":3, "HE":4, "AC":5}.get(suffix, 2)
+            mult = {"AE": 2, "SB": 3, "HE": 4, "AC": 5}.get(suffix, 2)
+
             if not released:
                 embed = discord.Embed(
                     title="Item Pending",
@@ -708,26 +710,39 @@ class BotCommands(commands.Cog):
                     color=discord.Color.orange()
                 )
             else:
-                prefix = discord.utils.get(ctx.guild.emojis, name=suffix.lower())
+                PREFIX_MAP = {
+                    "AE": "ae",
+                    "SB": "stat",
+                    "HE": "he",
+                    "AC": "armor"
+                }
+
+                emoji_name = PREFIX_MAP.get(suffix, suffix.lower())
+                prefix = discord.utils.get(ctx.guild.emojis, name=emoji_name)
                 prefix_str = str(prefix) if prefix else f"{suffix}:"
+
                 embed = discord.Embed(
                     title=f"{prefix_str} {title}",
                     description=desc,
                     color=discord.Color.green()
                 )
+
             embed.add_field(name="ID", value=full_id)
             embed.add_field(name="Type", value=typ)
             embed.add_field(name="Unlocked At", value=f"{base_id} x{mult}")
+
             file, url = None, None
             img_path = find_image(base_id)
             if img_path:
                 file = discord.File(img_path, filename=os.path.basename(img_path))
                 url = f"attachment://{os.path.basename(img_path)}"
                 embed.set_image(url=url)
+
             if file:
                 await ctx.send(embed=embed, file=file)
             else:
                 await ctx.send(embed=embed)
+
             return
 
         # Base ente
