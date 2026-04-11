@@ -178,6 +178,27 @@ class BotCommands(commands.Cog):
         total_max = base_max + enabled_bonus + temp_bonus + char_temp_bonus
 
         return f"{current}/{total_max}"
+    
+    def _format_barriers(self, hp):
+        hp = self._safe_json(hp, {})
+        if not isinstance(hp, dict):
+            return ""
+
+        barriers = hp.get("barriers", [])
+        if not isinstance(barriers, list) or not barriers:
+            return ""
+
+        lines = []
+        for i, b in enumerate(barriers, start=1):
+            if not isinstance(b, dict):
+                continue
+            amount = b.get("amount", 0)
+            if amount is None:
+                continue
+
+            lines.append(f"**Barrera {i} :** {amount}")
+
+        return "\n".join(lines)
 
     def _format_atk(self, atk):
         atk = self._safe_json(atk, {})
@@ -270,6 +291,7 @@ class BotCommands(commands.Cog):
 
     def _build_loadout_description(self, row):
         hp = self._format_hp(row.get("hp"))
+        barriers = self._format_barriers(row.get("hp"))
         atk = self._format_atk(row.get("atk"))
         weapon = self._format_weapon(row.get("weapon"))
         passives = self._format_passives(row.get("habilidades_pasivas"))
@@ -286,6 +308,10 @@ class BotCommands(commands.Cog):
 
         desc = (
             f"**HP :** {hp}\n"
+        )
+        if barriers:
+            desc += f"{barriers}\n"
+        desc += (
             f"**Ataque :** {atk}\n"
             f"**Arma :** {weapon}\n\n"
             f"**Habilidades pasivas:**\n{passives}\n\n"
@@ -506,6 +532,10 @@ class BotCommands(commands.Cog):
     async def ping(self, ctx):
         await ctx.send("Pong!")
 
+    @commands.command(aliases=["ficha", "personajes", "admisitrador", "web", "app"])
+    async def webapp(self, ctx):
+        await ctx.send("**Accede a la ficha web atravez de este sospechoso enlace:** https://osinventory-c3a0cbd8ekbzfne8.chilecentral-01.azurewebsites.net")
+
     @commands.command(aliases=["help", "h", "commands"])
     async def help_command(self, ctx):
         embed = discord.Embed(
@@ -513,6 +543,17 @@ class BotCommands(commands.Cog):
             description="Estos son los comandos disponibles del bot, agrupados por función.\n"
                         "Úsalos con el prefijo `>`.",
             color=discord.Color.gold()
+        )
+        embed.add_field(
+            name="Comandos para Jugador",
+            value=(
+                "**webapp** — Muestra un vinculo a la pagina al administrador web de fichas de personajes.\n"
+                "**item** `código` — Muestra información sobre un ente específico y sus habilidades.\n"
+                "**item** `código:AE /:SB/:HE/:AC` — Muestra información sobre una habilidad específica de un ente (ej. `E001:AC`).\n"
+                "**loadout**  — Muestra la lista de equipaciones de todos los personajes que el usuario tenga guardados la ficha web.\n"
+                "**loadout** `nombre` — Muestra la configuración de la equipacion con el nombre especificado.\n"
+            ),
+            inline=False
         )
         embed.add_field(
             name="Comandos de Configuración",
@@ -525,20 +566,14 @@ class BotCommands(commands.Cog):
             inline=False
         )
         embed.add_field(
-            name="Debugging / Sincronización",
+            name="Debugging / Moderación",
             value=(
+                "**create** — Crea inmediatamente el hilo de busquedas de esta semana.\n"
+                "**scan** — Escanear manualmente el hilo semanal de busquedas para este servidor ahora. \n"
                 "**ping** — Verifica si el bot está en línea.\n"
                 "**refresh** — Forzar la actualización de ítems desde Google Sheets y Drive.\n"
                 "**remove** `código` — Elimina entradas procesadas con ese código y sincroniza.\n"
-                "**push_logs** — Sube el archivo local weekly_logs a Supabase."
-            ),
-            inline=False
-        )
-        embed.add_field(
-            name="Acciones Rápidas",
-            value=(
-                "**create** — Crear inmediatamente el hilo de busquedas de esta semana.\n"
-                "**scan** — Escanear manualmente el hilo semanal de busquedas para este servidor ahora."
+                "**push_logs** — Sube el archivo local weekly_logs a la base de datos."
             ),
             inline=False
         )
@@ -611,7 +646,7 @@ class BotCommands(commands.Cog):
                 "data": data,
                 "updated_at": utc_now_iso()
             }).execute()
-            print("☁️ Weekly log synced to Supabase.")
+            print("Weekly log synced to Supabase.")
         except Exception as e:
             print(f"❌ Failed to push weekly log: {e}")
 
@@ -663,7 +698,7 @@ class BotCommands(commands.Cog):
         except Exception as e:
             await ctx.send(f"❌ Error: {e}")
 
-    @commands.command(aliases=["iteminfo", "skill", "skillinfo", "i", "ente", "unlocks", "unlock", "ability", "abilityinfo", "card", "cards", "items"])
+    @commands.command(aliases=["iteminfo", "items", "skill", "skillinfo", "i", "ente", "entes", "unlocks", "unlock", "ability", "abilityinfo", "card", "cards"])
     async def item(self, ctx):
         parts = ctx.message.content.split(maxsplit=1)
         if len(parts) < 2:
