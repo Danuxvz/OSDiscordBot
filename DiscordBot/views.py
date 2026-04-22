@@ -12,6 +12,13 @@ UNLOCK_SHEET_URL = "https://docs.google.com/spreadsheets/d/1LWhg-GA_QuFOlic2-oD7
 ENTE_SHEET_URL = os.getenv("SHEET_CSV_URL") or f"https://docs.google.com/spreadsheets/d/{os.getenv('SHEET_ID', '1dMUMUXjn22L2nYHFHKmDBObD1VskyVruzh-OM9IexLk')}/export?format=csv&gid=0"
 IMAGES_DIR = "ENTES"
 
+PREFIX_MAP = {
+    "AE": "ae",
+    "SB": "stat",
+    "HE": "he",
+    "AC": "armor"
+}
+
 def safe_text(value):
     if value is None:
         return ""
@@ -70,6 +77,7 @@ class EnteView(discord.ui.View):
         typ = row.get("type", "Unknown")
         released = row.get("released", "true").lower() in ("true", "1", "yes")
         mult = {"AE":2, "SB":3, "HE":4, "AC":5}.get(suffix, 2)
+
         if not released:
             embed = discord.Embed(
                 title="Item Pending",
@@ -77,13 +85,16 @@ class EnteView(discord.ui.View):
                 color=discord.Color.orange()
             )
         else:
-            prefix = discord.utils.get(interaction.guild.emojis, name=suffix.lower())
+            # Use PREFIX_MAP to get the correct emoji name for each suffix
+            emoji_name = PREFIX_MAP.get(suffix, suffix.lower())
+            prefix = discord.utils.get(interaction.guild.emojis, name=emoji_name)
             prefix_str = str(prefix) if prefix else f"{suffix}:"
             embed = discord.Embed(
                 title=f"{prefix_str} {title}",
                 description=desc,
                 color=discord.Color.green()
             )
+
         embed.add_field(name="ID", value=target)
         embed.add_field(name="Type", value=typ)
         embed.add_field(name="Unlocked At", value=f"{self.base_id} x{mult}")

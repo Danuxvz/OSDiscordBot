@@ -3,6 +3,7 @@ import json
 import random
 import asyncio
 import discord
+import re
 from datetime import datetime, timezone
 from .config import supabase, get_guild_cfg, set_config
 from .utils import get_local_now, get_current_week_range, get_current_week_start_str, get_weekly_log_path, utc_now_iso
@@ -10,7 +11,6 @@ from .items import load_items_table
 from .routes import match_route
 from .parsing import parse_busqueda_message
 from .services.supabase_service import upload_characters_csv_to_supabase
-
 
 scan_locks = {}
 
@@ -35,6 +35,77 @@ async def wait_for_rpforge_file(bot, channel, timeout=120):
         return msg.attachments[0]
     except asyncio.TimeoutError:
         return None
+
+async def deliver_item(bot, ops_channel, item_id, target_code, message_id, route, timeout=120):
+    """
+    Send rp!giveitem command and wait for RPForge confirmation.
+    Returns a dict with keys: success, transaction_id, error_message, raw_response.
+    Logs to Supabase table 'item_deliveries'.
+    """
+    cmd = f"rp!giveitem {item_id}x1 {target_code}"
+    try:
+        await ops_channel.send(cmd)
+    except Exception as e:
+        print(f"[DELIVERY] Failed to send command: {e}")
+        return {"success": False, "error_message": str(e), "transaction_id": None}
+
+    # Wait for RPForge response (embed or plain text containing "Transaction Record")
+    def check(msg):
+        return msg.channel == ops_channel and (
+            msg.author.bot and ("Transaction Record" in msg.content or msg.embeds)
+        )
+
+    try:
+        response = await bot.wait_for("message", timeout=timeout, check=check)
+    except asyncio.TimeoutError:
+        return {"success": False, "error_message": "Timeout waiting for RPForge response", "transaction_id": None}
+
+    # Parse response to determine success and extract transaction ID
+    content = response.content
+    success = False
+    transaction_id = None
+    error_msg = None
+
+    # Example success message: "Transaction Record ARPA_5043991014995205941424 ... Successfully gave items"
+    if "Successfully gave items" in content or "Transaction Record" in content:
+        # Try to extract transaction ID
+        match = re.search(r"Transaction Record\s+(\S+)", content)
+        if match:
+            transaction_id = match.group(1)
+        success = True
+    elif "failed" in content.lower() or "error" in content.lower():
+        error_msg = content[:200]  # capture first part
+        success = False
+    else:
+        # Unknown response – treat as failure for safety
+        error_msg = f"Unexpected response: {content[:200]}"
+        success = False
+
+    # Log to Supabase
+    if supabase:
+        try:
+            supabase.table("item_deliveries").insert({
+                "guild_id": str(ops_channel.guild.id),
+                "message_id": str(message_id),
+                "target_code": target_code,
+                "item_id": item_id,
+                "route": route,
+                "command_sent": cmd,
+                "transaction_id": transaction_id,
+                "success": success,
+                "error_message": error_msg,
+                "raw_response": content[:1000],
+                "created_at": utc_now_iso()
+            }).execute()
+        except Exception as e:
+            print(f"[SUPABASE] Failed to log delivery: {e}")
+
+    return {
+        "success": success,
+        "transaction_id": transaction_id,
+        "error_message": error_msg,
+        "raw_response": content
+    }
 
 async def scan_guild(bot, guild_id, force=False):
     cfg = get_guild_cfg(guild_id)
@@ -97,6 +168,8 @@ async def scan_guild(bot, guild_id, force=False):
             return
 
         items_table = load_items_table()
+        ops_channel_id = cfg.get("operations_channel")
+        ops_channel = bot.get_channel(ops_channel_id) if ops_channel_id else None
 
         async for message in thread.history(limit=1000, oldest_first=True):
             if message.author.bot:
@@ -235,19 +308,76 @@ async def scan_guild(bot, guild_id, force=False):
             except Exception as e:
                 print("Failed to send reply:", e)
 
-            # Send rp!giveitem commands to operations channel
-            ops_channel_id = cfg.get("operations_channel")
-            if ops_channel_id:
-                ops_channel = bot.get_channel(ops_channel_id)
-                if ops_channel:
-                    for r in results:
-                        if r.get("id"):
-                            cmd = f"rp!giveitem {r['id']}x1 {codigo}"
-                            try:
-                                await ops_channel.send(cmd)
-                                await asyncio.sleep(2)
-                            except Exception as e:
-                                print("Failed to send giveitem cmd:", e)
+            # Deliver items with verification (skip C-tier, log as success automatically)
+            delivery_results = []
+            all_delivered = True
+            for r in results:
+                item_id = r.get("id")
+                if not item_id:
+                    continue
+                route = r["route"]
+                tier = r["tier"]
+
+                if tier == "C":
+                    # C-tier items are designed to fail; we log as success without actual delivery
+                    delivery_results.append({
+                        "item_id": item_id,
+                        "route": route,
+                        "success": True,
+                        "transaction_id": None,
+                        "note": "C-tier item – delivery skipped"
+                    })
+                    if supabase:
+                        try:
+                            supabase.table("item_deliveries").insert({
+                                "guild_id": str(guild_id),
+                                "message_id": str(message.id),
+                                "target_code": codigo,
+                                "item_id": item_id,
+                                "route": route,
+                                "command_sent": None,
+                                "transaction_id": None,
+                                "success": True,
+                                "error_message": "C-tier item (skipped)",
+                                "raw_response": None,
+                                "created_at": utc_now_iso()
+                            }).execute()
+                        except Exception as e:
+                            print(f"[SUPABASE] Failed to log C-tier delivery: {e}")
+                    continue
+
+                if ops_channel is None:
+                    # No operations channel, cannot deliver
+                    delivery_results.append({
+                        "item_id": item_id,
+                        "route": route,
+                        "success": False,
+                        "error": "Operations channel not set"
+                    })
+                    all_delivered = False
+                    continue
+
+                result = await deliver_item(
+                    bot, ops_channel, item_id, codigo,
+                    message.id, route, timeout=120
+                )
+                delivery_results.append({
+                    "item_id": item_id,
+                    "route": route,
+                    "success": result["success"],
+                    "transaction_id": result.get("transaction_id"),
+                    "error": result.get("error_message")
+                })
+                if not result["success"]:
+                    all_delivered = False
+                    # Optionally notify user of failure
+                    try:
+                        await message.reply(
+                            f"⚠️ Error al entregar {item_id}. Un administrador revisará.",
+                            mention_author=True
+                        )
+                    except:
+                        pass
 
             weekly_log[log_key] = {
                 "user_id": user_id,
@@ -255,7 +385,8 @@ async def scan_guild(bot, guild_id, force=False):
                 "codigo": codigo,
                 "rutas": parsed["rutas"],
                 "results": results,
-                "delivered": True,
+                "deliveries": delivery_results,
+                "delivered": all_delivered,
                 "timestamp": get_local_now().isoformat()
             }
             with open(log_path, "w", encoding="utf-8") as f:
@@ -267,7 +398,11 @@ async def scan_guild(bot, guild_id, force=False):
                         "week_start": week_start_str,
                         "user_id": user_id,
                         "codigo": codigo,
-                        "payload": {"routes": parsed["rutas"], "results": results}
+                        "payload": {
+                            "routes": parsed["rutas"],
+                            "results": results,
+                            "deliveries": delivery_results
+                        }
                     }).execute()
                 except Exception as e:
                     print("[SUPABASE] processed_users error:", e)
@@ -288,7 +423,6 @@ async def scan_guild(bot, guild_id, force=False):
                 print("[SUPABASE] weekly_logs error:", e)
 
         # Request characters export
-        ops_channel_id = cfg.get("operations_channel")
         if ops_channel_id:
             ops_channel = bot.get_channel(ops_channel_id)
             if ops_channel:
@@ -331,7 +465,6 @@ async def check_weekly_thread(bot):
                         name=title,
                         type=discord.ChannelType.public_thread
                     )
-                    # Generate route list (6 per line)
                     from .routes import VALID_ROUTES
                     chunked_routes = [VALID_ROUTES[i:i+6] for i in range(0, len(VALID_ROUTES), 6)]
                     route_lines = ["- " + ", ".join(chunk) for chunk in chunked_routes]

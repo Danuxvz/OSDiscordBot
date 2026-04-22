@@ -49,10 +49,16 @@ def parse_busqueda_message(content):
             break
     if not codigo_line:
         return None
-    m = re.search(r'H?-?\s*(\d{1,4})', codigo_line, re.IGNORECASE)
+
+    # New: match any letters (A-Z) followed by 1-4 digits, case-insensitive
+    # Example: A123, B045, XYZ789, H001, etc.
+    m = re.search(r'([A-Za-z]{1,4})\s*-?\s*(\d{1,4})', codigo_line)
     if not m:
         return None
-    codigo = "H" + m.group(1).zfill(3)
+
+    prefix = m.group(1).upper()
+    number = m.group(2).zfill(3)
+    codigo = f"{prefix}{number}"
 
     # Fuzzy find routes
     rutas_labels = [

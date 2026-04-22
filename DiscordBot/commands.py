@@ -3,6 +3,8 @@ import os
 import json
 import difflib
 import re
+import csv
+import io
 from collections import defaultdict
 
 import discord
@@ -596,9 +598,15 @@ class BotCommands(commands.Cog):
         if not supabase:
             await ctx.send("❌ Supabase not configured.")
             return
+
+        # Normalize: uppercase, strip spaces
         codigo = codigo.upper().strip()
-        if not codigo.startswith("H"):
-            codigo = "H" + codigo
+
+        if not re.match(r'^[A-Z]{1,4}\d{1,4}$', codigo):
+            await ctx.send("❌ Formato inválido. Ejemplo: A123 o XYZ789.")
+            return
+
+        # Rest of the command unchanged...        
         week = get_current_week_start_str()
         gid = str(ctx.guild.id)
         start, _ = get_current_week_range()
@@ -983,3 +991,82 @@ class BotCommands(commands.Cog):
         except Exception as e:
             await ctx.send(f"❌ Error retrieving loadout: {e}")
             raise
+
+    # -----------------------------------------------------------------
+    # Item Deliveries Admin Command
+    # -----------------------------------------------------------------
+    @commands.command(aliases=["deliveries", "itemlog", "deliverylog", "entregas"])
+    @commands.has_permissions(administrator=True)
+    async def item_deliveries(self, ctx, limit: int = 50):
+        """
+        Exporta los registros de entrega de ítems (item_deliveries) a un archivo CSV.
+        Uso: >item_deliveries [límite] (por defecto 50, máximo 500)
+        """
+        if not supabase:
+            await ctx.send("❌ Supabase no está configurado.")
+            return
+
+        if limit > 500:
+            limit = 500
+        elif limit < 1:
+            limit = 50
+
+        try:
+            res = supabase.table("item_deliveries") \
+                .select("*") \
+                .eq("guild_id", str(ctx.guild.id)) \
+                .order("created_at", desc=True) \
+                .limit(limit) \
+                .execute()
+            data = res.data or []
+        except Exception as e:
+            await ctx.send(f"❌ Error al obtener datos: {e}")
+            return
+
+        if not data:
+            await ctx.send("📭 No hay registros de entregas para este servidor.")
+            return
+
+        # Crear CSV en memoria
+        output = io.StringIO()
+        writer = csv.writer(output)
+
+        headers = ["ID", "Guild", "Message ID", "Target Code", "Item ID", "Route",
+                   "Command", "Transaction ID", "Success", "Error", "Created At"]
+        writer.writerow(headers)
+
+        for row in data:
+            writer.writerow([
+                row.get("id"),
+                row.get("guild_id"),
+                row.get("message_id"),
+                row.get("target_code"),
+                row.get("item_id"),
+                row.get("route"),
+                row.get("command_sent"),
+                row.get("transaction_id"),
+                row.get("success"),
+                (row.get("error_message") or "")[:100],
+                row.get("created_at")
+            ])
+
+        output.seek(0)
+        file = discord.File(
+            io.BytesIO(output.getvalue().encode('utf-8')),
+            filename=f"entregas_{ctx.guild.id}.csv"
+        )
+
+        # Estadísticas para el embed
+        success_count = sum(1 for r in data if r.get("success"))
+        fail_count = len(data) - success_count
+
+        embed = discord.Embed(
+            title="📦 Registros de Entrega de Ítems",
+            description=f"Últimas {len(data)} entregas para este servidor.",
+            color=discord.Color.blue()
+        )
+        embed.add_field(name="✅ Exitosas", value=str(success_count))
+        embed.add_field(name="❌ Fallidas", value=str(fail_count))
+        embed.set_footer(text="Adjunto CSV con el detalle completo.")
+
+        await ctx.send(embed=embed, file=file)
