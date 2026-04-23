@@ -42,12 +42,20 @@ async def deliver_item(bot, ops_channel, item_id, target_code, message_id, route
     Uses a single continuous listener to catch both the Transaction Record and the success message.
     """
     cmd = f"rp!giveitem {item_id}x1 {target_code}"
-    try:
-        await ops_channel.send(cmd)
-        print(f"[DELIVERY] Sent command: {cmd}")
-    except Exception as e:
-        print(f"[DELIVERY] Failed to send command: {e}")
-        return {"success": False, "error_message": str(e), "transaction_id": None}
+
+    # Retry sending on temporary failures (503, etc.)
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            await ops_channel.send(cmd)
+            break
+        except Exception as e:
+            if attempt == max_retries - 1:
+                print(f"[DELIVERY] Failed to send command after {max_retries} attempts: {e}")
+                return {"success": False, "error_message": str(e), "transaction_id": None}
+            await asyncio.sleep(2 ** attempt)  # exponential backoff
+
+    print(f"[DELIVERY] Sent: {cmd}")
 
     def is_rpforge(msg):
         return (
@@ -57,7 +65,6 @@ async def deliver_item(bot, ops_channel, item_id, target_code, message_id, route
         )
 
     def extract_text(msg):
-        """Extract all searchable text from a message."""
         parts = [msg.content or ""]
         for embed in msg.embeds:
             if embed.title:
@@ -78,9 +85,7 @@ async def deliver_item(bot, ops_channel, item_id, target_code, message_id, route
     raw_first = None
     raw_second = None
     error_msg = None
-    combined_responses = []
 
-    # Continuous listening until we get the success confirmation or timeout
     start_time = asyncio.get_event_loop().time()
     while True:
         remaining = timeout - (asyncio.get_event_loop().time() - start_time)
@@ -95,27 +100,17 @@ async def deliver_item(bot, ops_channel, item_id, target_code, message_id, route
             break
 
         text = extract_text(msg)
-        combined_responses.append(text)
 
-        print(f"[DELIVERY] Received message from {msg.author.name}:")
-        print(f"  Content preview: {msg.content[:100] if msg.content else '<no content>'}")
-        print(f"  Embeds: {len(msg.embeds)}")
-        for i, emb in enumerate(msg.embeds):
-            print(f"    Embed {i}: title={emb.title}, desc={emb.description[:50] if emb.description else 'None'}")
-
-        # Capture transaction ID from first message containing "Transaction Record"
         if raw_first is None and "Transaction Record" in text:
             raw_first = text
             match = re.search(r"Transaction Record\s+(\S+)", text)
             if match:
                 transaction_id = match.group(1)
-                print(f"[DELIVERY] Extracted transaction ID: {transaction_id}")
+                print(f"[DELIVERY] Transaction ID: {transaction_id}")
 
-        # Check for success confirmation
         if "Successfully gave items" in text:
             raw_second = text
             success = True
-            print("[DELIVERY] Success confirmation found!")
             break
 
     raw_response = ""
