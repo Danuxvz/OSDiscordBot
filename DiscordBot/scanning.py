@@ -39,7 +39,7 @@ async def wait_for_rpforge_file(bot, channel, timeout=120):
 async def deliver_item(bot, ops_channel, item_id, target_code, message_id, route, timeout=120):
     """
     Send rp!giveitem command and wait for RPForge confirmation.
-    Handles both cases: success in a second message OR in a second embed of the first message.
+    Uses a single continuous listener to catch both the Transaction Record and the success message.
     """
     cmd = f"rp!giveitem {item_id}x1 {target_code}"
     try:
@@ -56,190 +56,80 @@ async def deliver_item(bot, ops_channel, item_id, target_code, message_id, route
             and "rpforge" in msg.author.name.lower()
         )
 
-    # ----- Wait for first message (Transaction Record) -----
-    def check_first(msg):
-        if not is_rpforge(msg):
-            return False
-        if "Transaction Record" in msg.content:
-            return True
+    def extract_text(msg):
+        """Extract all searchable text from a message."""
+        parts = [msg.content or ""]
         for embed in msg.embeds:
-            if embed.title and "Transaction Record" in embed.title:
-                return True
-            if embed.description and "Transaction Record" in embed.description:
-                return True
+            if embed.title:
+                parts.append(embed.title)
+            if embed.description:
+                parts.append(embed.description)
+            if embed.footer and embed.footer.text:
+                parts.append(embed.footer.text)
+            if embed.author and embed.author.name:
+                parts.append(embed.author.name)
             for field in embed.fields:
-                if "Transaction Record" in field.name or "Transaction Record" in field.value:
-                    return True
-        return False
-
-    try:
-        first_msg = await bot.wait_for("message", timeout=timeout, check=check_first)
-        print(f"[DELIVERY] Received first message from {first_msg.author.name}")
-    except asyncio.TimeoutError:
-        return {"success": False, "error_message": "Timeout waiting for Transaction Record", "transaction_id": None}
-
-    # Print detailed info about first message
-    print(f"[DELIVERY] First message details:")
-    print(f"  Content length: {len(first_msg.content)}")
-    print(f"  Embeds count: {len(first_msg.embeds)}")
-    for i, emb in enumerate(first_msg.embeds):
-        print(f"  Embed {i}: title='{emb.title}'")
-        print(f"    description: {emb.description[:100] if emb.description else 'None'}")
-        print(f"    fields: {len(emb.fields)}")
-        for f in emb.fields:
-            print(f"      {f.name}: {f.value[:50]}")
-
-    # Extract combined text and transaction ID
-    combined_first = first_msg.content or ""
-    for embed in first_msg.embeds:
-        if embed.title:
-            combined_first += "\n" + embed.title
-        if embed.description:
-            combined_first += "\n" + embed.description
-        for field in embed.fields:
-            combined_first += f"\n{field.name}: {field.value}"
-        if embed.footer and embed.footer.text:
-            combined_first += "\n" + embed.footer.text
+                parts.append(field.name)
+                parts.append(field.value)
+        return "\n".join(parts)
 
     transaction_id = None
-    match = re.search(r"Transaction Record\s+(\S+)", combined_first)
-    if match:
-        transaction_id = match.group(1)
-        print(f"[DELIVERY] Extracted transaction ID: {transaction_id}")
-
-    # ----- Check if success is already in the first message (multiple embeds) -----
-    success_in_first = False
-    if "Successfully gave items" in first_msg.content:
-        success_in_first = True
-        print("[DELIVERY] Success found in first message content")
-    for i, embed in enumerate(first_msg.embeds):
-        if embed.description and "Successfully gave items" in embed.description:
-            success_in_first = True
-            print(f"[DELIVERY] Success found in embed {i} description")
-            break
-        for field in embed.fields:
-            if "Successfully gave items" in field.name or "Successfully gave items" in field.value:
-                success_in_first = True
-                print(f"[DELIVERY] Success found in embed {i} field '{field.name}'")
-                break
-        if embed.footer and "Successfully gave items" in embed.footer.text:
-            success_in_first = True
-            print(f"[DELIVERY] Success found in embed {i} footer")
-
-    if success_in_first:
-        print("[DELIVERY] Success message found in first message")
-        raw_response = f"--- FIRST MESSAGE (contains success) ---\n{combined_first}"
-        if supabase:
-            try:
-                supabase.table("item_deliveries").insert({
-                    "guild_id": str(ops_channel.guild.id),
-                    "message_id": str(message_id),
-                    "target_code": target_code,
-                    "item_id": item_id,
-                    "route": route,
-                    "command_sent": cmd,
-                    "transaction_id": transaction_id,
-                    "success": True,
-                    "error_message": None,
-                    "raw_response": raw_response[:1000],
-                    "created_at": utc_now_iso()
-                }).execute()
-                print("[DELIVERY] Logged to Supabase (success=True)")
-            except Exception as e:
-                print(f"[SUPABASE] Failed to log delivery: {e}")
-        return {"success": True, "transaction_id": transaction_id, "error_message": None, "raw_response": raw_response}
-
-    # ----- Otherwise, wait for a second message -----
-    print("[DELIVERY] No success in first message, waiting for second message...")
-    await asyncio.sleep(0.5)
-
-    # Global listener for all messages during the wait (for debugging)
-    second_msg_event = asyncio.Event()
-    captured_second = None
-
-    async def debug_listener():
-        # Listen to all messages in the channel while we're waiting
-        def any_msg_check(msg):
-            return msg.channel == ops_channel
-        start_time = asyncio.get_event_loop().time()
-        while True:
-            try:
-                msg = await bot.wait_for("message", timeout=30, check=any_msg_check)
-                elapsed = asyncio.get_event_loop().time() - start_time
-                print(f"[DELIVERY DEBUG] Message received at +{elapsed:.1f}s:")
-                print(f"  Author: {msg.author.name} (bot={msg.author.bot})")
-                print(f"  Content: {msg.content[:200] if msg.content else '<no content>'}")
-                print(f"  Embeds: {len(msg.embeds)}")
-                for i, emb in enumerate(msg.embeds):
-                    print(f"    Embed {i}: title='{emb.title}', desc='{emb.description[:80] if emb.description else ''}'")
-                    if emb.fields:
-                        print(f"      Fields: {[f.name for f in emb.fields]}")
-                # Check if this is the success message we want
-                if is_rpforge(msg):
-                    if "Successfully gave items" in msg.content:
-                        print("[DELIVERY DEBUG] -> This is the success message (content match)!")
-                    else:
-                        for emb in msg.embeds:
-                            if emb.description and "Successfully gave items" in emb.description:
-                                print("[DELIVERY DEBUG] -> This is the success message (embed desc match)!")
-                            for field in emb.fields:
-                                if "Successfully gave items" in field.name or "Successfully gave items" in field.value:
-                                    print("[DELIVERY DEBUG] -> This is the success message (field match)!")
-            except asyncio.TimeoutError:
-                print("[DELIVERY DEBUG] Listener timed out after 30 seconds.")
-                break
-
-    listener_task = asyncio.create_task(debug_listener())
-
-    def check_second(msg):
-        if not is_rpforge(msg):
-            return False
-        if "Successfully gave items" in msg.content:
-            print("[DELIVERY] Second message matched by content")
-            return True
-        for embed in msg.embeds:
-            if embed.title and "Successfully gave items" in embed.title:
-                print("[DELIVERY] Second message matched by embed title")
-                return True
-            if embed.description and "Successfully gave items" in embed.description:
-                print("[DELIVERY] Second message matched by embed description")
-                return True
-            for field in embed.fields:
-                if "Successfully gave items" in field.name or "Successfully gave items" in field.value:
-                    print("[DELIVERY] Second message matched by embed field")
-                    return True
-        return False
-
     success = False
+    raw_first = None
+    raw_second = None
     error_msg = None
+    combined_responses = []
+
+    # Continuous listening until we get the success confirmation or timeout
+    start_time = asyncio.get_event_loop().time()
+    while True:
+        remaining = timeout - (asyncio.get_event_loop().time() - start_time)
+        if remaining <= 0:
+            error_msg = "Timeout waiting for RPForge responses"
+            break
+
+        try:
+            msg = await bot.wait_for("message", timeout=remaining, check=is_rpforge)
+        except asyncio.TimeoutError:
+            error_msg = "Timeout waiting for RPForge responses"
+            break
+
+        text = extract_text(msg)
+        combined_responses.append(text)
+
+        print(f"[DELIVERY] Received message from {msg.author.name}:")
+        print(f"  Content preview: {msg.content[:100] if msg.content else '<no content>'}")
+        print(f"  Embeds: {len(msg.embeds)}")
+        for i, emb in enumerate(msg.embeds):
+            print(f"    Embed {i}: title={emb.title}, desc={emb.description[:50] if emb.description else 'None'}")
+
+        # Capture transaction ID from first message containing "Transaction Record"
+        if raw_first is None and "Transaction Record" in text:
+            raw_first = text
+            match = re.search(r"Transaction Record\s+(\S+)", text)
+            if match:
+                transaction_id = match.group(1)
+                print(f"[DELIVERY] Extracted transaction ID: {transaction_id}")
+
+        # Check for success confirmation
+        if "Successfully gave items" in text:
+            raw_second = text
+            success = True
+            print("[DELIVERY] Success confirmation found!")
+            break
+
     raw_response = ""
-    try:
-        second_msg = await bot.wait_for("message", timeout=30, check=check_second)
-        listener_task.cancel()
-        print(f"[DELIVERY] Received second message: {second_msg.content[:100]}")
-        success = True
-        combined_second = second_msg.content or ""
-        for embed in second_msg.embeds:
-            if embed.title:
-                combined_second += "\n" + embed.title
-            if embed.description:
-                combined_second += "\n" + embed.description
-            for field in embed.fields:
-                combined_second += f"\n{field.name}: {field.value}"
-        raw_response = f"--- FIRST MESSAGE ---\n{combined_first}\n\n--- SECOND MESSAGE ---\n{combined_second}"
-    except asyncio.TimeoutError:
-        listener_task.cancel()
-        success = False
-        error_msg = "Transaction Record received but no 'Successfully gave items' confirmation"
-        raw_response = f"--- FIRST MESSAGE ---\n{combined_first}\n\n--- SECOND MESSAGE TIMEOUT ---"
-        print("[DELIVERY] Timeout waiting for second message")
+    if raw_first:
+        raw_response = f"--- FIRST MESSAGE ---\n{raw_first}"
+    if raw_second:
+        raw_response += f"\n\n--- SECOND MESSAGE ---\n{raw_second}"
+    if not raw_response:
+        raw_response = "No RPForge messages received."
 
-    # Wait for listener to finish
-    try:
-        await listener_task
-    except asyncio.CancelledError:
-        pass
+    if not success and error_msg is None:
+        error_msg = "Transaction Record received but no success confirmation"
 
+    # Log to Supabase
     if supabase:
         try:
             supabase.table("item_deliveries").insert({
