@@ -599,64 +599,66 @@ class BotCommands(commands.Cog):
             await ctx.send("❌ Supabase not configured.")
             return
 
-        # Normalize: uppercase, strip spaces
+        # Normalize input
         codigo = codigo.upper().strip()
-
         if not re.match(r'^[A-Z]{1,4}\d{1,4}$', codigo):
             await ctx.send("❌ Formato inválido. Ejemplo: A123 o XYZ789.")
             return
 
-        # Rest of the command unchanged...        
         week = get_current_week_start_str()
         gid = str(ctx.guild.id)
         start, _ = get_current_week_range()
         log_path = get_weekly_log_path(start, ctx.guild.id)
 
-        # Delete from Supabase
+        removed_local = 0
+        removed_supabase = 0
+
+        # 1. Clean local log file
+        if os.path.exists(log_path):
+            try:
+                with open(log_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                keys_to_delete = [k for k, v in data.items() if v.get("codigo") == codigo]
+                removed_local = len(keys_to_delete)
+                for k in keys_to_delete:
+                    del data[k]
+                if removed_local:
+                    with open(log_path, "w", encoding="utf-8") as f:
+                        json.dump(data, f, indent=4, ensure_ascii=False)
+            except Exception as e:
+                await ctx.send(f"❌ Local log error: {e}")
+                return
+
+        # 2. Update Supabase weekly_logs
         try:
-            supabase.table("processed_users") \
-                .delete() \
+            res = supabase.table("weekly_logs") \
+                .select("data") \
                 .eq("guild_id", gid) \
                 .eq("week_start", week) \
-                .eq("codigo", codigo) \
+                .maybe_single() \
                 .execute()
-            await ctx.send(f"🧹 Removed entries with código `{codigo}` from processed_users.")
+            if res.data and res.data.get("data"):
+                supabase_data = res.data["data"]
+                keys_to_delete = [k for k, v in supabase_data.items() if v.get("codigo") == codigo]
+                removed_supabase = len(keys_to_delete)
+                if removed_supabase:
+                    for k in keys_to_delete:
+                        del supabase_data[k]
+                    supabase.table("weekly_logs").upsert({
+                        "guild_id": gid,
+                        "week_start": week,
+                        "data": supabase_data,
+                        "updated_at": utc_now_iso()
+                    }).execute()
         except Exception as e:
             await ctx.send(f"❌ Supabase error: {e}")
             return
 
-        # Remove from local log
-        if not os.path.exists(log_path):
-            await ctx.send("⚠️ No local weekly log found.")
-            return
-        try:
-            with open(log_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            keys_to_delete = []
-            for key, entry in data.items():
-                if entry.get("codigo") == codigo:
-                    keys_to_delete.append(key)
-            removed_count = len(keys_to_delete)
-            for key in keys_to_delete:
-                del data[key]
-            with open(log_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=4, ensure_ascii=False)
-            await ctx.send(f"🗑 Removed **{removed_count}** entries from local weekly log.")
-        except Exception as e:
-            await ctx.send(f"❌ Local log error: {e}")
-            return
-
-        # Push updated log to Supabase
-        try:
-            supabase.table("weekly_logs").upsert({
-                "guild_id": gid,
-                "week_start": week,
-                "data": data,
-                "updated_at": utc_now_iso()
-            }).execute()
-            print("Weekly log synced to Supabase.")
-        except Exception as e:
-            print(f"❌ Failed to push weekly log: {e}")
+        await ctx.send(
+            f"🧹 Removed entries with código `{codigo}`.\n"
+            f"Local log: {removed_local} removed.\n"
+            f"Supabase weekly log: {removed_supabase} removed."
+        )
 
     @commands.command()
     @commands.has_permissions(administrator=True)
