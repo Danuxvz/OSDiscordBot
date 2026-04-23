@@ -78,6 +78,17 @@ async def deliver_item(bot, ops_channel, item_id, target_code, message_id, route
     except asyncio.TimeoutError:
         return {"success": False, "error_message": "Timeout waiting for Transaction Record", "transaction_id": None}
 
+    # Print detailed info about first message
+    print(f"[DELIVERY] First message details:")
+    print(f"  Content length: {len(first_msg.content)}")
+    print(f"  Embeds count: {len(first_msg.embeds)}")
+    for i, emb in enumerate(first_msg.embeds):
+        print(f"  Embed {i}: title='{emb.title}'")
+        print(f"    description: {emb.description[:100] if emb.description else 'None'}")
+        print(f"    fields: {len(emb.fields)}")
+        for f in emb.fields:
+            print(f"      {f.name}: {f.value[:50]}")
+
     # Extract combined text and transaction ID
     combined_first = first_msg.content or ""
     for embed in first_msg.embeds:
@@ -100,17 +111,23 @@ async def deliver_item(bot, ops_channel, item_id, target_code, message_id, route
     success_in_first = False
     if "Successfully gave items" in first_msg.content:
         success_in_first = True
-    for embed in first_msg.embeds:
+        print("[DELIVERY] Success found in first message content")
+    for i, embed in enumerate(first_msg.embeds):
         if embed.description and "Successfully gave items" in embed.description:
             success_in_first = True
+            print(f"[DELIVERY] Success found in embed {i} description")
             break
         for field in embed.fields:
             if "Successfully gave items" in field.name or "Successfully gave items" in field.value:
                 success_in_first = True
+                print(f"[DELIVERY] Success found in embed {i} field '{field.name}'")
                 break
+        if embed.footer and "Successfully gave items" in embed.footer.text:
+            success_in_first = True
+            print(f"[DELIVERY] Success found in embed {i} footer")
 
     if success_in_first:
-        print("[DELIVERY] Success message found in first message (multiple embeds)")
+        print("[DELIVERY] Success message found in first message")
         raw_response = f"--- FIRST MESSAGE (contains success) ---\n{combined_first}"
         if supabase:
             try:
@@ -133,7 +150,46 @@ async def deliver_item(bot, ops_channel, item_id, target_code, message_id, route
         return {"success": True, "transaction_id": transaction_id, "error_message": None, "raw_response": raw_response}
 
     # ----- Otherwise, wait for a second message -----
+    print("[DELIVERY] No success in first message, waiting for second message...")
     await asyncio.sleep(0.5)
+
+    # Global listener for all messages during the wait (for debugging)
+    second_msg_event = asyncio.Event()
+    captured_second = None
+
+    async def debug_listener():
+        # Listen to all messages in the channel while we're waiting
+        def any_msg_check(msg):
+            return msg.channel == ops_channel
+        start_time = asyncio.get_event_loop().time()
+        while True:
+            try:
+                msg = await bot.wait_for("message", timeout=30, check=any_msg_check)
+                elapsed = asyncio.get_event_loop().time() - start_time
+                print(f"[DELIVERY DEBUG] Message received at +{elapsed:.1f}s:")
+                print(f"  Author: {msg.author.name} (bot={msg.author.bot})")
+                print(f"  Content: {msg.content[:200] if msg.content else '<no content>'}")
+                print(f"  Embeds: {len(msg.embeds)}")
+                for i, emb in enumerate(msg.embeds):
+                    print(f"    Embed {i}: title='{emb.title}', desc='{emb.description[:80] if emb.description else ''}'")
+                    if emb.fields:
+                        print(f"      Fields: {[f.name for f in emb.fields]}")
+                # Check if this is the success message we want
+                if is_rpforge(msg):
+                    if "Successfully gave items" in msg.content:
+                        print("[DELIVERY DEBUG] -> This is the success message (content match)!")
+                    else:
+                        for emb in msg.embeds:
+                            if emb.description and "Successfully gave items" in emb.description:
+                                print("[DELIVERY DEBUG] -> This is the success message (embed desc match)!")
+                            for field in emb.fields:
+                                if "Successfully gave items" in field.name or "Successfully gave items" in field.value:
+                                    print("[DELIVERY DEBUG] -> This is the success message (field match)!")
+            except asyncio.TimeoutError:
+                print("[DELIVERY DEBUG] Listener timed out after 30 seconds.")
+                break
+
+    listener_task = asyncio.create_task(debug_listener())
 
     def check_second(msg):
         if not is_rpforge(msg):
@@ -152,11 +208,6 @@ async def deliver_item(bot, ops_channel, item_id, target_code, message_id, route
                 if "Successfully gave items" in field.name or "Successfully gave items" in field.value:
                     print("[DELIVERY] Second message matched by embed field")
                     return True
-        # Debug output for unmatched messages
-        print(f"[DELIVERY] Candidate second message from {msg.author.name} did NOT match.")
-        print(f"  Content: {msg.content[:100]}")
-        for i, emb in enumerate(msg.embeds):
-            print(f"  Embed {i}: title={emb.title}, desc={emb.description[:50] if emb.description else 'None'}")
         return False
 
     success = False
@@ -164,6 +215,7 @@ async def deliver_item(bot, ops_channel, item_id, target_code, message_id, route
     raw_response = ""
     try:
         second_msg = await bot.wait_for("message", timeout=30, check=check_second)
+        listener_task.cancel()
         print(f"[DELIVERY] Received second message: {second_msg.content[:100]}")
         success = True
         combined_second = second_msg.content or ""
@@ -176,10 +228,17 @@ async def deliver_item(bot, ops_channel, item_id, target_code, message_id, route
                 combined_second += f"\n{field.name}: {field.value}"
         raw_response = f"--- FIRST MESSAGE ---\n{combined_first}\n\n--- SECOND MESSAGE ---\n{combined_second}"
     except asyncio.TimeoutError:
+        listener_task.cancel()
         success = False
         error_msg = "Transaction Record received but no 'Successfully gave items' confirmation"
         raw_response = f"--- FIRST MESSAGE ---\n{combined_first}\n\n--- SECOND MESSAGE TIMEOUT ---"
         print("[DELIVERY] Timeout waiting for second message")
+
+    # Wait for listener to finish
+    try:
+        await listener_task
+    except asyncio.CancelledError:
+        pass
 
     if supabase:
         try:
