@@ -49,37 +49,71 @@ async def deliver_item(bot, ops_channel, item_id, target_code, message_id, route
         print(f"[DELIVERY] Failed to send command: {e}")
         return {"success": False, "error_message": str(e), "transaction_id": None}
 
-    # Wait for RPForge response (embed or plain text containing "Transaction Record")
+    # Wait for a response from RPForge (a bot) that contains the transaction details.
     def check(msg):
-        return msg.channel == ops_channel and (
-            msg.author.bot and ("Transaction Record" in msg.content or msg.embeds)
-        )
+        if msg.channel != ops_channel:
+            return False
+        if not msg.author.bot:
+            return False
+        # Only accept messages from RPForge Premium (case-insensitive name check)
+        if "rpforge" not in msg.author.name.lower():
+            return False
+
+        # Check content
+        if "Transaction Record" in msg.content:
+            return True
+        # Check embeds
+        if msg.embeds:
+            for embed in msg.embeds:
+                # Check embed title, description, and fields
+                if embed.title and "Transaction Record" in embed.title:
+                    return True
+                if embed.description and "Transaction Record" in embed.description:
+                    return True
+                for field in embed.fields:
+                    if "Transaction Record" in field.name or "Transaction Record" in field.value:
+                        return True
+        return False
 
     try:
         response = await bot.wait_for("message", timeout=timeout, check=check)
     except asyncio.TimeoutError:
         return {"success": False, "error_message": "Timeout waiting for RPForge response", "transaction_id": None}
 
-    # Parse response to determine success and extract transaction ID
-    content = response.content
+    # Build a combined text from all parts of the response
+    combined_parts = [response.content or ""]
+    for embed in response.embeds:
+        if embed.title:
+            combined_parts.append(embed.title)
+        if embed.description:
+            combined_parts.append(embed.description)
+        for field in embed.fields:
+            combined_parts.append(f"{field.name}: {field.value}")
+        if embed.footer and embed.footer.text:
+            combined_parts.append(embed.footer.text)
+
+    combined_text = "\n".join(part for part in combined_parts if part)
+
+    # Determine success and extract transaction ID
     success = False
     transaction_id = None
     error_msg = None
 
-    # Example success message: "Transaction Record ARPA_5043991014995205941424 ... Successfully gave items"
-    if "Successfully gave items" in content or "Transaction Record" in content:
-        # Try to extract transaction ID
-        match = re.search(r"Transaction Record\s+(\S+)", content)
+    # Success is indicated by "Successfully gave items" anywhere in the combined text
+    if "Successfully gave items" in combined_text:
+        success = True
+        # Extract transaction ID from pattern "Transaction Record ARPA_..."
+        match = re.search(r"Transaction Record\s+(\S+)", combined_text)
         if match:
             transaction_id = match.group(1)
-        success = True
-    elif "failed" in content.lower() or "error" in content.lower():
-        error_msg = content[:200]  # capture first part
+    elif "failed" in combined_text.lower() or "error" in combined_text.lower():
+        error_msg = combined_text[:200]
         success = False
     else:
-        # Unknown response – treat as failure for safety
-        error_msg = f"Unexpected response: {content[:200]}"
+        error_msg = f"Response did not contain success or failure markers"
         success = False
+        # Debug: print the raw combined text for inspection
+        print(f"[DELIVERY] Unrecognized response from RPForge:\n{combined_text[:500]}")
 
     # Log to Supabase
     if supabase:
@@ -94,7 +128,7 @@ async def deliver_item(bot, ops_channel, item_id, target_code, message_id, route
                 "transaction_id": transaction_id,
                 "success": success,
                 "error_message": error_msg,
-                "raw_response": content[:1000],
+                "raw_response": combined_text[:1000],
                 "created_at": utc_now_iso()
             }).execute()
         except Exception as e:
@@ -104,7 +138,7 @@ async def deliver_item(bot, ops_channel, item_id, target_code, message_id, route
         "success": success,
         "transaction_id": transaction_id,
         "error_message": error_msg,
-        "raw_response": content
+        "raw_response": combined_text
     }
 
 async def scan_guild(bot, guild_id, force=False):
