@@ -38,9 +38,8 @@ async def wait_for_rpforge_file(bot, channel, timeout=120):
 
 async def deliver_item(bot, ops_channel, item_id, target_code, message_id, route, timeout=120):
     """
-    Send rp!giveitem command and wait for RPForge confirmation.
-    Returns a dict with keys: success, transaction_id, error_message, raw_response.
-    Logs to Supabase table 'item_deliveries'.
+    Send rp!giveitem command and wait for RPForge confirmation (two messages).
+    Returns dict with success, transaction_id, error_message, raw_response.
     """
     cmd = f"rp!giveitem {item_id}x1 {target_code}"
     try:
@@ -49,73 +48,89 @@ async def deliver_item(bot, ops_channel, item_id, target_code, message_id, route
         print(f"[DELIVERY] Failed to send command: {e}")
         return {"success": False, "error_message": str(e), "transaction_id": None}
 
-    # Wait for a response from RPForge (a bot) that contains the transaction details.
-    def check(msg):
-        if msg.channel != ops_channel:
-            return False
-        if not msg.author.bot:
-            return False
-        # Only accept messages from RPForge Premium (case-insensitive name check)
-        if "rpforge" not in msg.author.name.lower():
-            return False
+    # Helper to check if a message is from RPForge
+    def is_rpforge(msg):
+        return (
+            msg.channel == ops_channel
+            and msg.author.bot
+            and "rpforge" in msg.author.name.lower()
+        )
 
-        # Check content
+    def check_first(msg):
+        if not is_rpforge(msg):
+            return False
         if "Transaction Record" in msg.content:
             return True
-        # Check embeds
-        if msg.embeds:
-            for embed in msg.embeds:
-                # Check embed title, description, and fields
-                if embed.title and "Transaction Record" in embed.title:
+        for embed in msg.embeds:
+            if embed.title and "Transaction Record" in embed.title:
+                return True
+            if embed.description and "Transaction Record" in embed.description:
+                return True
+            for field in embed.fields:
+                if "Transaction Record" in field.name or "Transaction Record" in field.value:
                     return True
-                if embed.description and "Transaction Record" in embed.description:
-                    return True
-                for field in embed.fields:
-                    if "Transaction Record" in field.name or "Transaction Record" in field.value:
-                        return True
         return False
 
     try:
-        response = await bot.wait_for("message", timeout=timeout, check=check)
+        first_msg = await bot.wait_for("message", timeout=timeout, check=check_first)
     except asyncio.TimeoutError:
-        return {"success": False, "error_message": "Timeout waiting for RPForge response", "transaction_id": None}
+        return {"success": False, "error_message": "Timeout waiting for Transaction Record", "transaction_id": None}
 
-    # Build a combined text from all parts of the response
-    combined_parts = [response.content or ""]
-    for embed in response.embeds:
+    # Extract combined text from first message
+    combined_first = first_msg.content or ""
+    for embed in first_msg.embeds:
         if embed.title:
-            combined_parts.append(embed.title)
+            combined_first += "\n" + embed.title
         if embed.description:
-            combined_parts.append(embed.description)
+            combined_first += "\n" + embed.description
         for field in embed.fields:
-            combined_parts.append(f"{field.name}: {field.value}")
+            combined_first += f"\n{field.name}: {field.value}"
         if embed.footer and embed.footer.text:
-            combined_parts.append(embed.footer.text)
+            combined_first += "\n" + embed.footer.text
 
-    combined_text = "\n".join(part for part in combined_parts if part)
-
-    # Determine success and extract transaction ID
-    success = False
+    # Extract transaction ID
     transaction_id = None
+    match = re.search(r"Transaction Record\s+(\S+)", combined_first)
+    if match:
+        transaction_id = match.group(1)
+
+    # ----- Wait for second message (Successfully gave items) -----
+    def check_second(msg):
+        if not is_rpforge(msg):
+            return False
+        # Check content
+        if "Successfully gave items" in msg.content:
+            return True
+        # Check embeds
+        for embed in msg.embeds:
+            if embed.title and "Successfully gave items" in embed.title:
+                return True
+            if embed.description and "Successfully gave items" in embed.description:
+                return True
+            for field in embed.fields:
+                if "Successfully gave items" in field.name or "Successfully gave items" in field.value:
+                    return True
+        return False
+
+    success = False
     error_msg = None
-
-    # Success is indicated by "Successfully gave items" anywhere in the combined text
-    if "Successfully gave items" in combined_text:
+    try:
+        second_msg = await bot.wait_for("message", timeout=30, check=check_second)
         success = True
-        # Extract transaction ID from pattern "Transaction Record ARPA_..."
-        match = re.search(r"Transaction Record\s+(\S+)", combined_text)
-        if match:
-            transaction_id = match.group(1)
-    elif "failed" in combined_text.lower() or "error" in combined_text.lower():
-        error_msg = combined_text[:200]
+        combined_second = second_msg.content or ""
+        for embed in second_msg.embeds:
+            if embed.title:
+                combined_second += "\n" + embed.title
+            if embed.description:
+                combined_second += "\n" + embed.description
+            for field in embed.fields:
+                combined_second += f"\n{field.name}: {field.value}"
+        raw_response = f"--- FIRST MESSAGE ---\n{combined_first}\n\n--- SECOND MESSAGE ---\n{combined_second}"
+    except asyncio.TimeoutError:
         success = False
-    else:
-        error_msg = f"Response did not contain success or failure markers"
-        success = False
-        # Debug: print the raw combined text for inspection
-        print(f"[DELIVERY] Unrecognized response from RPForge:\n{combined_text[:500]}")
+        error_msg = "Transaction Record received but no 'Successfully gave items' confirmation"
+        raw_response = f"--- FIRST MESSAGE ---\n{combined_first}\n\n--- SECOND MESSAGE TIMEOUT ---"
 
-    # Log to Supabase
     if supabase:
         try:
             supabase.table("item_deliveries").insert({
@@ -128,7 +143,7 @@ async def deliver_item(bot, ops_channel, item_id, target_code, message_id, route
                 "transaction_id": transaction_id,
                 "success": success,
                 "error_message": error_msg,
-                "raw_response": combined_text[:1000],
+                "raw_response": raw_response[:1000],
                 "created_at": utc_now_iso()
             }).execute()
         except Exception as e:
@@ -138,7 +153,7 @@ async def deliver_item(bot, ops_channel, item_id, target_code, message_id, route
         "success": success,
         "transaction_id": transaction_id,
         "error_message": error_msg,
-        "raw_response": combined_text
+        "raw_response": raw_response
     }
 
 async def scan_guild(bot, guild_id, force=False):
