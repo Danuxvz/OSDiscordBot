@@ -38,8 +38,8 @@ async def wait_for_rpforge_file(bot, channel, timeout=120):
 
 async def deliver_item(bot, ops_channel, item_id, target_code, message_id, route, timeout=120):
     """
-    Send rp!giveitem command and wait for RPForge confirmation (two messages).
-    Returns dict with success, transaction_id, error_message, raw_response.
+    Send rp!giveitem command and wait for RPForge confirmation.
+    Handles both cases: success in a second message OR in a second embed of the first message.
     """
     cmd = f"rp!giveitem {item_id}x1 {target_code}"
     try:
@@ -60,21 +60,15 @@ async def deliver_item(bot, ops_channel, item_id, target_code, message_id, route
     def check_first(msg):
         if not is_rpforge(msg):
             return False
-        # Check content
         if "Transaction Record" in msg.content:
-            print(f"[DELIVERY] First message matched by content")
             return True
-        # Check embeds
         for embed in msg.embeds:
             if embed.title and "Transaction Record" in embed.title:
-                print(f"[DELIVERY] First message matched by embed title")
                 return True
             if embed.description and "Transaction Record" in embed.description:
-                print(f"[DELIVERY] First message matched by embed description")
                 return True
             for field in embed.fields:
                 if "Transaction Record" in field.name or "Transaction Record" in field.value:
-                    print(f"[DELIVERY] First message matched by embed field")
                     return True
         return False
 
@@ -82,10 +76,9 @@ async def deliver_item(bot, ops_channel, item_id, target_code, message_id, route
         first_msg = await bot.wait_for("message", timeout=timeout, check=check_first)
         print(f"[DELIVERY] Received first message from {first_msg.author.name}")
     except asyncio.TimeoutError:
-        print(f"[DELIVERY] Timeout waiting for Transaction Record")
         return {"success": False, "error_message": "Timeout waiting for Transaction Record", "transaction_id": None}
 
-    # Extract combined text from first message
+    # Extract combined text and transaction ID
     combined_first = first_msg.content or ""
     for embed in first_msg.embeds:
         if embed.title:
@@ -103,34 +96,74 @@ async def deliver_item(bot, ops_channel, item_id, target_code, message_id, route
         transaction_id = match.group(1)
         print(f"[DELIVERY] Extracted transaction ID: {transaction_id}")
 
-    # Small pause to let the second message arrive
+    # ----- Check if success is already in the first message (multiple embeds) -----
+    success_in_first = False
+    if "Successfully gave items" in first_msg.content:
+        success_in_first = True
+    for embed in first_msg.embeds:
+        if embed.description and "Successfully gave items" in embed.description:
+            success_in_first = True
+            break
+        for field in embed.fields:
+            if "Successfully gave items" in field.name or "Successfully gave items" in field.value:
+                success_in_first = True
+                break
+
+    if success_in_first:
+        print("[DELIVERY] Success message found in first message (multiple embeds)")
+        raw_response = f"--- FIRST MESSAGE (contains success) ---\n{combined_first}"
+        if supabase:
+            try:
+                supabase.table("item_deliveries").insert({
+                    "guild_id": str(ops_channel.guild.id),
+                    "message_id": str(message_id),
+                    "target_code": target_code,
+                    "item_id": item_id,
+                    "route": route,
+                    "command_sent": cmd,
+                    "transaction_id": transaction_id,
+                    "success": True,
+                    "error_message": None,
+                    "raw_response": raw_response[:1000],
+                    "created_at": utc_now_iso()
+                }).execute()
+                print("[DELIVERY] Logged to Supabase (success=True)")
+            except Exception as e:
+                print(f"[SUPABASE] Failed to log delivery: {e}")
+        return {"success": True, "transaction_id": transaction_id, "error_message": None, "raw_response": raw_response}
+
+    # ----- Otherwise, wait for a second message -----
     await asyncio.sleep(0.5)
 
-    # ----- Wait for second message (Successfully gave items) -----
     def check_second(msg):
         if not is_rpforge(msg):
             return False
         if "Successfully gave items" in msg.content:
-            print(f"[DELIVERY] Second message matched by content")
+            print("[DELIVERY] Second message matched by content")
             return True
         for embed in msg.embeds:
             if embed.title and "Successfully gave items" in embed.title:
-                print(f"[DELIVERY] Second message matched by embed title")
+                print("[DELIVERY] Second message matched by embed title")
                 return True
             if embed.description and "Successfully gave items" in embed.description:
-                print(f"[DELIVERY] Second message matched by embed description")
+                print("[DELIVERY] Second message matched by embed description")
                 return True
             for field in embed.fields:
                 if "Successfully gave items" in field.name or "Successfully gave items" in field.value:
-                    print(f"[DELIVERY] Second message matched by embed field")
+                    print("[DELIVERY] Second message matched by embed field")
                     return True
+        # Debug output for unmatched messages
+        print(f"[DELIVERY] Candidate second message from {msg.author.name} did NOT match.")
+        print(f"  Content: {msg.content[:100]}")
+        for i, emb in enumerate(msg.embeds):
+            print(f"  Embed {i}: title={emb.title}, desc={emb.description[:50] if emb.description else 'None'}")
         return False
 
     success = False
     error_msg = None
     raw_response = ""
     try:
-        second_msg = await bot.wait_for("message", timeout=15, check=check_second)
+        second_msg = await bot.wait_for("message", timeout=30, check=check_second)
         print(f"[DELIVERY] Received second message: {second_msg.content[:100]}")
         success = True
         combined_second = second_msg.content or ""
@@ -146,9 +179,8 @@ async def deliver_item(bot, ops_channel, item_id, target_code, message_id, route
         success = False
         error_msg = "Transaction Record received but no 'Successfully gave items' confirmation"
         raw_response = f"--- FIRST MESSAGE ---\n{combined_first}\n\n--- SECOND MESSAGE TIMEOUT ---"
-        print(f"[DELIVERY] Timeout waiting for second message")
+        print("[DELIVERY] Timeout waiting for second message")
 
-    # Log to Supabase
     if supabase:
         try:
             supabase.table("item_deliveries").insert({
