@@ -14,6 +14,9 @@ from .services.supabase_service import upload_characters_csv_to_supabase
 
 scan_locks = {}
 
+# Permanent ID of the RPForge / MythOS bot (never changes)
+RPFORGE_BOT_ID = 1230402077747056641
+
 def get_lock(guild_id):
     if guild_id not in scan_locks:
         scan_locks[guild_id] = asyncio.Lock()
@@ -57,11 +60,12 @@ async def deliver_item(bot, ops_channel, item_id, target_code, message_id, route
 
     print(f"[DELIVERY] Sent: {cmd}")
 
+    # Identify the bot by its permanent ID (name-agnostic)
     def is_rpforge(msg):
         return (
             msg.channel == ops_channel
             and msg.author.bot
-            and "rpforge" in msg.author.name.lower()
+            and msg.author.id == RPFORGE_BOT_ID
         )
 
     def extract_text(msg):
@@ -255,18 +259,6 @@ async def scan_guild(bot, guild_id, force=False):
                 }
                 with open(log_path, "w", encoding="utf-8") as f:
                     json.dump(weekly_log, f, indent=4, ensure_ascii=False)
-
-                if supabase:
-                    try:
-                        supabase.table("processed_users").upsert({
-                            "guild_id": str(guild_id),
-                            "week_start": week_start_str,
-                            "user_id": user_id,
-                            "codigo": codigo,
-                            "payload": {"routes": parsed["rutas"], "failed": True}
-                        }).execute()
-                    except Exception as e:
-                        print("[SUPABASE] processed_users error:", e)
                 continue
 
             # Roll items
@@ -303,17 +295,6 @@ async def scan_guild(bot, guild_id, force=False):
                 }
                 with open(log_path, "w", encoding="utf-8") as f:
                     json.dump(weekly_log, f, indent=4, ensure_ascii=False)
-                if supabase:
-                    try:
-                        supabase.table("processed_users").upsert({
-                            "guild_id": str(guild_id),
-                            "week_start": week_start_str,
-                            "user_id": user_id,
-                            "codigo": codigo,
-                            "payload": {"routes": parsed["rutas"], "failed": True}
-                        }).execute()
-                    except Exception as e:
-                        print("[SUPABASE] processed_users error:", e)
                 continue
 
             # Build reply
@@ -363,7 +344,6 @@ async def scan_guild(bot, guild_id, force=False):
                 tier = r["tier"]
 
                 if tier == "C":
-                    # C-tier items are designed to fail; we log as success without actual delivery
                     delivery_results.append({
                         "item_id": item_id,
                         "route": route,
@@ -391,7 +371,6 @@ async def scan_guild(bot, guild_id, force=False):
                     continue
 
                 if ops_channel is None:
-                    # No operations channel, cannot deliver
                     delivery_results.append({
                         "item_id": item_id,
                         "route": route,
@@ -414,7 +393,6 @@ async def scan_guild(bot, guild_id, force=False):
                 })
                 if not result["success"]:
                     all_delivered = False
-                    # Optionally notify user of failure
                     try:
                         await message.reply(
                             f"⚠️ Error al entregar {item_id}. Un administrador revisará.",
@@ -435,21 +413,6 @@ async def scan_guild(bot, guild_id, force=False):
             }
             with open(log_path, "w", encoding="utf-8") as f:
                 json.dump(weekly_log, f, indent=4, ensure_ascii=False)
-            if supabase:
-                try:
-                    supabase.table("processed_users").upsert({
-                        "guild_id": str(guild_id),
-                        "week_start": week_start_str,
-                        "user_id": user_id,
-                        "codigo": codigo,
-                        "payload": {
-                            "routes": parsed["rutas"],
-                            "results": results,
-                            "deliveries": delivery_results
-                        }
-                    }).execute()
-                except Exception as e:
-                    print("[SUPABASE] processed_users error:", e)
 
         # Final save
         with open(log_path, "w", encoding="utf-8") as f:
