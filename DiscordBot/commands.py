@@ -14,7 +14,7 @@ from .config import supabase, get_guild_cfg, set_config
 from .utils import get_current_week_start_str, get_current_week_range, get_weekly_log_path, utc_now_iso
 from .items import refresh_items_table, load_items_table
 from .scanning import scan_guild, check_weekly_thread
-from .routes import VALID_ROUTES
+from .routes import VALID_ROUTES, match_route
 from .views import EnteView, find_item, load_sheet, find_image, UNLOCK_SHEET_URL, ENTE_SHEET_URL, normalize_id
 from .routes import VALID_ROUTES, load_guild_aliases, get_alias_map
 
@@ -48,6 +48,76 @@ CARD_EMOJIS = {
     "Sobornar": "<:diplomaticact:1279228077691637760>",
     "Seducir": "<:diplomaticact:1279228077691637760>",
 }
+
+# ----- Pagination View for Route Entes -----
+class RouteEntesView(discord.ui.View):
+    def __init__(self, items, route_name, timeout=120):
+        super().__init__(timeout=timeout)
+        self.items = items          # list of item dicts
+        self.route_name = route_name
+        self.page = 0
+        self.items_per_page = 10
+
+    def get_page_embeds(self):
+        """Return a list of embeds for the current page."""
+        start = self.page * self.items_per_page
+        end = start + self.items_per_page
+        page_items = self.items[start:end]
+        embeds = []
+        for item in page_items:
+            embed = discord.Embed(
+                title=f"{item['id']} – {item['name']}",
+                color=discord.Color.blurple()
+            )
+            embed.add_field(name="Tier", value=item['tier'], inline=True)
+            embed.add_field(name="Elemento", value=item.get('elemento', '?'), inline=True)
+            embed.add_field(name="Clase", value=item.get('clase', '?'), inline=True)
+
+            # Attach image as thumbnail
+            img_path = find_image(item['id'])
+            if img_path:
+                file = discord.File(img_path, filename=os.path.basename(img_path))
+                embed.set_thumbnail(url=f"attachment://{os.path.basename(img_path)}")
+                # We must return files along with embeds – handled in final send
+                embed._files = [file]   # temporary hack to carry files
+            else:
+                embed._files = []
+            embeds.append(embed)
+        return embeds
+
+    async def update_message(self, interaction):
+        embeds = self.get_page_embeds()
+        # Collect all files from the embeds
+        files = []
+        for e in embeds:
+            if hasattr(e, '_files') and e._files:
+                files.extend(e._files)
+                delattr(e, '_files')
+        # Update the message
+        await interaction.response.edit_message(embeds=embeds, attachments=files, view=self)
+        # Disable buttons if on first/last page
+        self.children[0].disabled = (self.page == 0)                     # Previous button
+        self.children[1].disabled = (self.page >= (len(self.items)-1) // self.items_per_page)  # Next button
+        await interaction.followup.edit_message(interaction.message.id, view=self)
+
+    @discord.ui.button(label="◀ Previous", style=discord.ButtonStyle.primary)
+    async def previous_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.page > 0:
+            self.page -= 1
+            await self.update_message(interaction)
+
+    @discord.ui.button(label="Next ▶", style=discord.ButtonStyle.primary)
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if (self.page + 1) * self.items_per_page < len(self.items):
+            self.page += 1
+            await self.update_message(interaction)
+
+    async def on_timeout(self):
+        # Disable buttons when view times out
+        for child in self.children:
+            child.disabled = True
+        # See if we can edit the original message – interaction may be gone
+        # Better to leave as is; timeout is fine.
 
 class BotCommands(commands.Cog):
     def __init__(self, bot):
@@ -621,7 +691,55 @@ class BotCommands(commands.Cog):
         except Exception as e:
             await ctx.send(f"❌ Failed to remove alias: {e}")
 
+    @commands.command(aliases=["route_items", "route_entelist", "r_entes"])
+    async def route_entes(self, ctx, *, route_name: str):
+        """Show all entes (items) available in a given route, with images. Paginated."""
+        items_table = load_items_table()
+        if not items_table:
+            await ctx.send("❌ No items loaded. Run `>refresh_items` first.")
+            return
 
+        # Resolve route (supports aliases)
+        canonical_route = await match_route(route_name, items_table, guild_id=ctx.guild.id)
+        if not canonical_route:
+            await ctx.send(f"❌ Route `{route_name}` not recognised.")
+            return
+
+        # Collect all items from this route, deduplicate by 'id'
+        route_data = items_table.get(canonical_route, {})
+        items_by_id = {}
+        for tier, item_list in route_data.items():
+            for item in item_list:
+                item_id = item.get("id")
+                if item_id and item_id not in items_by_id:
+                    # Store a copy with tier info
+                    items_by_id[item_id] = {
+                        "id": item_id,
+                        "name": item.get("name", "Unknown"),
+                        "tier": tier,
+                        "elemento": item.get("elemento", "?"),
+                        "clase": item.get("clase", "?")
+                    }
+        if not items_by_id:
+            await ctx.send(f"ℹ️ No entes found for route **{canonical_route}**.")
+            return
+
+        # Sort: higher tier first (C > D > E) then by ID
+        tier_order = {"C": 0, "D": 1, "E": 2}
+        sorted_items = sorted(
+            items_by_id.values(),
+            key=lambda x: (tier_order.get(x["tier"], 3), x["id"])
+        )
+
+        # Create view and send first page
+        view = RouteEntesView(sorted_items, canonical_route)
+        embeds = view.get_page_embeds()
+        files = []
+        for e in embeds:
+            if hasattr(e, '_files') and e._files:
+                files.extend(e._files)
+                delattr(e, '_files')
+        await ctx.send(embeds=embeds, files=files, view=view)
 
     @commands.command()
     async def ping(self, ctx):
