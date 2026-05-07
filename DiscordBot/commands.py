@@ -691,7 +691,7 @@ class BotCommands(commands.Cog):
         except Exception as e:
             await ctx.send(f"❌ Failed to remove alias: {e}")
 
-    @commands.command(aliases=["route_items", "route_entelist", "r_entes", "rentes", "rutae", "rutaentes", "entesruta", "rentes"])
+    @commands.command(aliases=["route_items", "route_entelist", "r_entes", "rentes", "rutae", "rutaentes", "entesruta", "routeitems"])
     async def route_entes(self, ctx, *, route_name: str):
         """Show all entes (items) available in a given route, with images. Paginated."""
         items_table = load_items_table()
