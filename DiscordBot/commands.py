@@ -58,12 +58,13 @@ class RouteEntesView(discord.ui.View):
         self.page = 0
         self.items_per_page = 10
 
-    def get_page_embeds(self):
-        """Return a list of embeds for the current page."""
+    def get_page_data(self):
+        """Return (embeds, files) for the current page."""
         start = self.page * self.items_per_page
         end = start + self.items_per_page
         page_items = self.items[start:end]
         embeds = []
+        files = []
         for item in page_items:
             embed = discord.Embed(
                 title=f"{item['id']} – {item['name']}",
@@ -73,27 +74,16 @@ class RouteEntesView(discord.ui.View):
             embed.add_field(name="Elemento", value=item.get('elemento', '?'), inline=True)
             embed.add_field(name="Clase", value=item.get('clase', '?'), inline=True)
 
-            # Attach image as thumbnail
             img_path = find_image(item['id'])
             if img_path:
                 file = discord.File(img_path, filename=os.path.basename(img_path))
                 embed.set_thumbnail(url=f"attachment://{os.path.basename(img_path)}")
-                # We must return files along with embeds – handled in final send
-                embed._files = [file]   # temporary hack to carry files
-            else:
-                embed._files = []
+                files.append(file)
             embeds.append(embed)
-        return embeds
+        return embeds, files
 
     async def update_message(self, interaction):
-        embeds = self.get_page_embeds()
-        # Collect all files from the embeds
-        files = []
-        for e in embeds:
-            if hasattr(e, '_files') and e._files:
-                files.extend(e._files)
-                delattr(e, '_files')
-        # Update the message
+        embeds, files = self.get_page_data()
         await interaction.response.edit_message(embeds=embeds, attachments=files, view=self)
         # Disable buttons if on first/last page
         self.children[0].disabled = (self.page == 0)                     # Previous button
@@ -116,8 +106,6 @@ class RouteEntesView(discord.ui.View):
         # Disable buttons when view times out
         for child in self.children:
             child.disabled = True
-        # See if we can edit the original message – interaction may be gone
-        # Better to leave as is; timeout is fine.
 
 class BotCommands(commands.Cog):
     def __init__(self, bot):
@@ -750,15 +738,9 @@ class BotCommands(commands.Cog):
 
             # Create view and send first page
             view = RouteEntesView(sorted_items, canonical_route)
-            embeds = view.get_page_embeds()
-            files = []
-            for e in embeds:
-                if hasattr(e, '_files') and e._files:
-                    files.extend(e._files)
-                    delattr(e, '_files')
+            embeds, files = view.get_page_data()
+            await ctx.send(embeds=embeds, files=files, view=view)            
 
-            print(f"[DEBUG] Sending {len(embeds)} embeds with {len(files)} files")
-            await ctx.send(embeds=embeds, files=files, view=view)
 
         except Exception as e:
             import traceback
