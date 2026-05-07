@@ -692,17 +692,22 @@ class BotCommands(commands.Cog):
             await ctx.send(f"❌ Failed to remove alias: {e}")
 
     @commands.command(aliases=["route_items", "route_entelist", "r_entes", "rentes", "rutae", "rutaentes", "entesruta", "routeitems"])
-    async def route_entes(self, ctx, *, route_name: str):
-        """Show all entes (items) available in a given route, with images. Paginated."""
+    @commands.has_permissions(administrator=True)
+    async def route_entes(self, ctx, *, route_name: str = None):
+        """Show all entes (items) available in a given route, with images. Paginated. Admin only."""
+        if route_name is None:
+            await ctx.send("❌ Uso: `>route_entes <nombre_de_ruta>`\nEjemplo: `>route_entes \"Rio Barakawa\"`")
+            return
+
         items_table = load_items_table()
         if not items_table:
             await ctx.send("❌ No items loaded. Run `>refresh_items` first.")
             return
 
-        # Resolve route (supports aliases)
+        # Resolve route (supports aliases, fuzzy matching)
         canonical_route = await match_route(route_name, items_table, guild_id=ctx.guild.id)
         if not canonical_route:
-            await ctx.send(f"❌ Route `{route_name}` not recognised.")
+            await ctx.send(f"❌ Ruta `{route_name}` no reconocida. Usa `>routes` para ver las rutas disponibles.")
             return
 
         # Collect all items from this route, deduplicate by 'id'
@@ -712,7 +717,6 @@ class BotCommands(commands.Cog):
             for item in item_list:
                 item_id = item.get("id")
                 if item_id and item_id not in items_by_id:
-                    # Store a copy with tier info
                     items_by_id[item_id] = {
                         "id": item_id,
                         "name": item.get("name", "Unknown"),
@@ -721,7 +725,7 @@ class BotCommands(commands.Cog):
                         "clase": item.get("clase", "?")
                     }
         if not items_by_id:
-            await ctx.send(f"ℹ️ No entes found for route **{canonical_route}**.")
+            await ctx.send(f"ℹ️ No se encontraron entes en la ruta **{canonical_route}**.")
             return
 
         # Sort: higher tier first (C > D > E) then by ID
