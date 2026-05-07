@@ -603,7 +603,7 @@ class BotCommands(commands.Cog):
 
 
 
-    @commands.command(aliases=["rutas", "availableroutes", "routes", "showroutes", "listroutes"])
+    @commands.command(aliases=["rutas", "availableroutes", "showroutes", "listroutes"])
     async def routes(self, ctx):
         """Show all available routes (canonical names) and their aliases."""
         items_table = load_items_table()  # from your items.py
