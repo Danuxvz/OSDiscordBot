@@ -603,7 +603,7 @@ class BotCommands(commands.Cog):
 
 
 
-    @commands.command(aliases=["rutas", "availableroutes"])
+    @commands.command(aliases=["rutas", "availableroutes", "routes", "showroutes", "listroutes"])
     async def routes(self, ctx):
         """Show all available routes (canonical names) and their aliases."""
         items_table = load_items_table()  # from your items.py
@@ -640,7 +640,7 @@ class BotCommands(commands.Cog):
 
         await ctx.send(embed=embed)
 
-    @commands.command(aliases=["addalias", "routealias"])
+    @commands.command(aliases=["addalias", "routealias", "aliasroute", "aroute", "aalias"])
     @commands.has_permissions(administrator=True)
     async def add_route_alias(self, ctx, canonical: str, *, alias: str):
         """Add a custom alias for a route. Example: >add_route_alias "Rio Barakawa" "RB" """
@@ -668,7 +668,7 @@ class BotCommands(commands.Cog):
         except Exception as e:
             await ctx.send(f"❌ Failed to add alias: {e}")
 
-    @commands.command(aliases=["removealias", "delalias"])
+    @commands.command(aliases=["removealias", "delalias", "ralias"])
     @commands.has_permissions(administrator=True)
     async def remove_route_alias(self, ctx, *, alias: str):
         """Remove a custom alias."""
@@ -691,7 +691,7 @@ class BotCommands(commands.Cog):
         except Exception as e:
             await ctx.send(f"❌ Failed to remove alias: {e}")
 
-    @commands.command(aliases=["route_items", "route_entelist", "r_entes"])
+    @commands.command(aliases=["route_items", "route_entelist", "r_entes", "rentes", "rutae", "rutaentes", "entesruta", "rentes"])
     async def route_entes(self, ctx, *, route_name: str):
         """Show all entes (items) available in a given route, with images. Paginated."""
         items_table = load_items_table()
@@ -754,39 +754,43 @@ class BotCommands(commands.Cog):
         embed = discord.Embed(
             title="📘 OS Bot — Guía de Comandos",
             description="Estos son los comandos disponibles del bot, agrupados por función.\n"
-                        "Úsalos con el prefijo `>`.",
+                        "Úsalos con el prefijo `>`. Los comandos con ⚙️ requieren permisos de administrador.",
             color=discord.Color.gold()
         )
         embed.add_field(
             name="Comandos para Jugador",
             value=(
-                "**webapp** — Muestra un vinculo a la pagina al administrador web de fichas de personajes.\n"
-                "**item** `código` — Muestra información sobre un ente específico y sus habilidades.\n"
-                "**item** `código:AE /:SB/:HE/:AC` — Muestra información sobre una habilidad específica de un ente (ej. `E001:AC`).\n"
-                "**loadout**  — Muestra la lista de equipaciones de todos los personajes que el usuario tenga guardados la ficha web.\n"
-                "**loadout** `nombre` — Muestra la configuración de la equipacion con el nombre especificado.\n"
+                "**webapp** — Muestra un vínculo a la página web de gestión de fichas.\n"
+                "**item** `código` — Muestra información sobre un ente.\n"
+                "**item** `código:AE/:SB/:HE/:AC` — Muestra una habilidad específica (ej. `E001:AC`).\n"
+                "**loadout** — Lista tus equipaciones.\n"
+                "**loadout** `nombre` — Muestra una equipación concreta.\n"
+                "**routes** — Muestra todas las rutas disponibles y sus alias conocidos.\n"
+                "**route_entes** `ruta` — Lista todos los entes de una ruta (con imágenes y paginación)."
             ),
             inline=False
         )
         embed.add_field(
-            name="Comandos de Configuración",
+            name="Comandos de Configuración ⚙️",
             value=(
-                "**setbusquedas** `#canal` — Establece el canal donde se crean los hilos semanales de busquedas.\n"
-                "**setlogs** `#canal` — Establece el canal donde se registran las operaciones rápidas.\n"
-                "**sethour** `hour|off` — Establece la hora diaria de escaneo (0-23) o 'off'.\n"
-                "**prefix** `nuevo_prefijo` — Cambia el prefijo del bot."
+                "**setbusquedas** `#canal` — Canal donde se crean los hilos semanales de búsquedas.\n"
+                "**setlogs** `#canal` — Canal de registro de operaciones.\n"
+                "**sethour** `hour|off` — Hora diaria de escaneo (0‑23) o 'off'.\n"
+                "**prefix** `nuevo_prefijo` — Cambia el prefijo del bot.\n"
+                "**addalias** `ruta_canonica` `alias` — Añade un alias personalizado para una ruta.\n"
+                "**removealias** `alias` — Elimina un alias personalizado."
             ),
             inline=False
         )
         embed.add_field(
-            name="Debugging / Moderación",
+            name="Debugging / Moderación ⚙️",
             value=(
-                "**create** — Crea inmediatamente el hilo de busquedas de esta semana.\n"
-                "**scan** — Escanear manualmente el hilo semanal de busquedas para este servidor ahora. \n"
-                "**ping** — Verifica si el bot está en línea.\n"
-                "**refresh** — Forzar la actualización de ítems desde Google Sheets y Drive.\n"
+                "**create** — Crea el hilo de búsquedas de la semana actual.\n"
+                "**scan** — Escanea manualmente el hilo semanal.\n"
+                "**ping** — Verifica que el bot está online.\n"
+                "**refresh** — Actualiza la tabla de ítems desde Google Sheets y Drive.\n"
                 "**remove** `código` — Elimina entradas procesadas con ese código y sincroniza.\n"
-                "**push_logs** — Sube el archivo local weekly_logs a la base de datos."
+                "**push_logs** — Sube el archivo local `weekly_logs` a Supabase."
             ),
             inline=False
         )
