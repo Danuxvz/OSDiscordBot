@@ -695,55 +695,75 @@ class BotCommands(commands.Cog):
     @commands.has_permissions(administrator=True)
     async def route_entes(self, ctx, *, route_name: str = None):
         """Show all entes (items) available in a given route, with images. Paginated. Admin only."""
-        if route_name is None:
-            await ctx.send("❌ Uso: `>route_entes <nombre_de_ruta>`\nEjemplo: `>route_entes \"Rio Barakawa\"`")
-            return
+        try:
+            if route_name is None:
+                await ctx.send("❌ Uso: `>route_entes <nombre_de_ruta>`\nEjemplo: `>route_entes \"Rio Barakawa\"`")
+                return
 
-        items_table = load_items_table()
-        if not items_table:
-            await ctx.send("❌ No items loaded. Run `>refresh_items` first.")
-            return
+            print(f"[DEBUG] route_entes called with: {route_name}")
 
-        # Resolve route (supports aliases, fuzzy matching)
-        canonical_route = await match_route(route_name, items_table, guild_id=ctx.guild.id)
-        if not canonical_route:
-            await ctx.send(f"❌ Ruta `{route_name}` no reconocida. Usa `>routes` para ver las rutas disponibles.")
-            return
+            items_table = load_items_table()
+            if not items_table:
+                await ctx.send("❌ No items loaded. Run `>refresh_items` first.")
+                return
 
-        # Collect all items from this route, deduplicate by 'id'
-        route_data = items_table.get(canonical_route, {})
-        items_by_id = {}
-        for tier, item_list in route_data.items():
-            for item in item_list:
-                item_id = item.get("id")
-                if item_id and item_id not in items_by_id:
-                    items_by_id[item_id] = {
-                        "id": item_id,
-                        "name": item.get("name", "Unknown"),
-                        "tier": tier,
-                        "elemento": item.get("elemento", "?"),
-                        "clase": item.get("clase", "?")
-                    }
-        if not items_by_id:
-            await ctx.send(f"ℹ️ No se encontraron entes en la ruta **{canonical_route}**.")
-            return
+            print(f"[DEBUG] items_table loaded, number of routes: {len(items_table)}")
 
-        # Sort: higher tier first (C > D > E) then by ID
-        tier_order = {"C": 0, "D": 1, "E": 2}
-        sorted_items = sorted(
-            items_by_id.values(),
-            key=lambda x: (tier_order.get(x["tier"], 3), x["id"])
-        )
+            # Resolve route (supports aliases, fuzzy matching)
+            canonical_route = await match_route(route_name, items_table, guild_id=ctx.guild.id)
+            print(f"[DEBUG] canonical_route = {canonical_route}")
 
-        # Create view and send first page
-        view = RouteEntesView(sorted_items, canonical_route)
-        embeds = view.get_page_embeds()
-        files = []
-        for e in embeds:
-            if hasattr(e, '_files') and e._files:
-                files.extend(e._files)
-                delattr(e, '_files')
-        await ctx.send(embeds=embeds, files=files, view=view)
+            if not canonical_route:
+                await ctx.send(f"❌ Ruta `{route_name}` no reconocida. Usa `>routes` para ver las rutas disponibles.")
+                return
+
+            # Collect all items from this route, deduplicate by 'id'
+            route_data = items_table.get(canonical_route, {})
+            print(f"[DEBUG] route_data keys (tiers): {list(route_data.keys())}")
+
+            items_by_id = {}
+            for tier, item_list in route_data.items():
+                print(f"[DEBUG] Tier {tier} has {len(item_list)} items")
+                for item in item_list:
+                    item_id = item.get("id")
+                    if item_id and item_id not in items_by_id:
+                        items_by_id[item_id] = {
+                            "id": item_id,
+                            "name": item.get("name", "Unknown"),
+                            "tier": tier,
+                            "elemento": item.get("elemento", "?"),
+                            "clase": item.get("clase", "?")
+                        }
+
+            if not items_by_id:
+                await ctx.send(f"ℹ️ No se encontraron entes en la ruta **{canonical_route}**.")
+                return
+
+            print(f"[DEBUG] Total unique items: {len(items_by_id)}")
+
+            # Sort: higher tier first (C > D > E) then by ID
+            tier_order = {"C": 0, "D": 1, "E": 2}
+            sorted_items = sorted(
+                items_by_id.values(),
+                key=lambda x: (tier_order.get(x["tier"], 3), x["id"])
+            )
+
+            # Create view and send first page
+            view = RouteEntesView(sorted_items, canonical_route)
+            embeds = view.get_page_embeds()
+            files = []
+            for e in embeds:
+                if hasattr(e, '_files') and e._files:
+                    files.extend(e._files)
+                    delattr(e, '_files')
+
+            print(f"[DEBUG] Sending {len(embeds)} embeds with {len(files)} files")
+            await ctx.send(embeds=embeds, files=files, view=view)
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            await ctx.send(f"❌ Error interno: `{e}`\nRevisa la consola para más detalles.")
 
     @commands.command()
     async def ping(self, ctx):
