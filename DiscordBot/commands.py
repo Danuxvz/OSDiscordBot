@@ -16,6 +16,7 @@ from .items import refresh_items_table, load_items_table
 from .scanning import scan_guild, check_weekly_thread
 from .routes import VALID_ROUTES
 from .views import EnteView, find_item, load_sheet, find_image, UNLOCK_SHEET_URL, ENTE_SHEET_URL, normalize_id
+from .routes import VALID_ROUTES, load_guild_aliases, get_alias_map
 
 # Constants for card display
 CARD_LABELS = {
@@ -529,6 +530,98 @@ class BotCommands(commands.Cog):
         await ctx.send("Running quick scan for this server now...")
         await scan_guild(self.bot, ctx.guild.id, force=True)
         await ctx.send("Quick scan finished.")
+
+
+
+    @commands.command(aliases=["rutas", "availableroutes"])
+    async def routes(self, ctx):
+        """Show all available routes (canonical names) and their aliases."""
+        items_table = load_items_table()  # from your items.py
+        all_routes = sorted(items_table.keys())
+
+        if not all_routes:
+            await ctx.send("No routes found. Run `>refresh_items` first.")
+            return
+
+        # Load guild aliases to show them too
+        guild_aliases = await load_guild_aliases(str(ctx.guild.id))
+        alias_map = get_alias_map(guild_aliases)
+        # Build reverse mapping: canonical -> list of aliases (excluding built‑in if you want)
+        reverse_aliases = {}
+        for alias, canon in alias_map.items():
+            reverse_aliases.setdefault(canon, []).append(alias)
+
+        # Create embed with chunks
+        embed = discord.Embed(
+            title="📍 Rutas disponibles",
+            description=f"Total: {len(all_routes)} rutas",
+            color=discord.Color.blue()
+        )
+        chunk_size = 15
+        for i in range(0, len(all_routes), chunk_size):
+            chunk = all_routes[i:i+chunk_size]
+            value = "\n".join(f"• **{r}**" for r in chunk)
+            embed.add_field(name="\u200b", value=value, inline=True)
+
+        # Add a separate field for aliases (optional, can be lengthy)
+        if reverse_aliases:
+            alias_text = "\n".join(f"**{c}** → {', '.join(a[:3])}" for c, a in list(reverse_aliases.items())[:10])
+            embed.add_field(name="Alias conocidos", value=alias_text[:1024], inline=False)
+
+        await ctx.send(embed=embed)
+
+    @commands.command(aliases=["addalias", "routealias"])
+    @commands.has_permissions(administrator=True)
+    async def add_route_alias(self, ctx, canonical: str, *, alias: str):
+        """Add a custom alias for a route. Example: >add_route_alias "Rio Barakawa" "RB" """
+        if not supabase:
+            await ctx.send("❌ Supabase not configured.")
+            return
+
+        # Validate canonical route exists
+        items_table = load_items_table()
+        if canonical not in items_table:
+            await ctx.send(f"❌ Route `{canonical}` not found in the items sheet.")
+            return
+
+        alias_lower = alias.strip().lower()
+        guild_id = str(ctx.guild.id)
+
+        try:
+            # Insert or replace (if alias already exists, upsert)
+            supabase.table("route_aliases").upsert({
+                "guild_id": guild_id,
+                "canonical": canonical,
+                "alias": alias_lower
+            }, on_conflict="guild_id,alias").execute()
+            await ctx.send(f"✅ Alias `{alias}` → `{canonical}` added.")
+        except Exception as e:
+            await ctx.send(f"❌ Failed to add alias: {e}")
+
+    @commands.command(aliases=["removealias", "delalias"])
+    @commands.has_permissions(administrator=True)
+    async def remove_route_alias(self, ctx, *, alias: str):
+        """Remove a custom alias."""
+        if not supabase:
+            await ctx.send("❌ Supabase not configured.")
+            return
+
+        guild_id = str(ctx.guild.id)
+        alias_lower = alias.strip().lower()
+        try:
+            res = supabase.table("route_aliases") \
+                .delete() \
+                .eq("guild_id", guild_id) \
+                .eq("alias", alias_lower) \
+                .execute()
+            if res.data:
+                await ctx.send(f"✅ Alias `{alias}` removed.")
+            else:
+                await ctx.send(f"❌ Alias `{alias}` not found.")
+        except Exception as e:
+            await ctx.send(f"❌ Failed to remove alias: {e}")
+
+
 
     @commands.command()
     async def ping(self, ctx):
