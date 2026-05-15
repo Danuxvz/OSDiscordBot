@@ -432,7 +432,7 @@ class Factions(commands.Cog):
     # -------------------------------------------------------------------
     # >factions create <name>
     # -------------------------------------------------------------------
-    @factions_group.command(name='create')
+    @factions_group.command(name='create', aliases=['crear'])
     @commands.check(is_admin_or_bot_admin)
     async def factions_create(self, ctx: commands.Context, *, name: str):
         faction_name = name.strip()
@@ -445,7 +445,7 @@ class Factions(commands.Cog):
     # -------------------------------------------------------------------
     # >factions edit <name>
     # -------------------------------------------------------------------
-    @factions_group.command(name='edit')
+    @factions_group.command(name='edit', aliases=['update','editar'])
     @commands.check(is_admin_or_bot_admin)
     async def factions_edit(self, ctx: commands.Context, *, name: str):
         faction_name = name.strip()
@@ -459,7 +459,7 @@ class Factions(commands.Cog):
     # -------------------------------------------------------------------
     # >factions set [channel] F1 10, F2 20   (channel optional)
     # -------------------------------------------------------------------
-    @factions_group.command(name='set')
+    @factions_group.command(name='set', aliases=['assign','asignar'])
     @commands.check(is_admin_or_bot_admin)
     async def factions_set(self, ctx: commands.Context, channel_arg: str = None, *, points_str: str = None):
         channel = self._resolve_channel(ctx, channel_arg)  # None => ctx.channel
@@ -510,7 +510,7 @@ class Factions(commands.Cog):
     # -------------------------------------------------------------------
     # >factions points [#canal] Faction +/-n
     # -------------------------------------------------------------------
-    @factions_group.command(name='points')
+    @factions_group.command(name='points', aliases=['point', 'pts','puntos'])
     @commands.check(is_admin_or_bot_admin)
     async def factions_points(self, ctx: commands.Context, arg1: str = None, arg2: str = None, arg3: str = None):
         channel = ctx.channel
@@ -590,7 +590,7 @@ class Factions(commands.Cog):
     # -------------------------------------------------------------------
     # >factions location / loc [channel]
     # -------------------------------------------------------------------
-    @factions_group.command(name='location', aliases=['loc'])
+    @factions_group.command(name='location', aliases=['loc','ubicacion', 'ubicación'])
     @commands.check(is_admin_or_bot_admin)
     async def factions_location(self, ctx: commands.Context, channel_arg: str = None):
         channel = self._resolve_channel(ctx, channel_arg)
@@ -613,7 +613,7 @@ class Factions(commands.Cog):
     # -------------------------------------------------------------------
     # >factions modifiers / modifier / mod / mods [channel]
     # -------------------------------------------------------------------
-    @factions_group.command(name='modifiers', aliases=['modifier', 'mod', 'mods'])
+    @factions_group.command(name='modifiers', aliases=['modifier', 'mod', 'mods','modificador'])
     @commands.check(is_admin_or_bot_admin)
     async def factions_modifiers(self, ctx: commands.Context, channel_arg: str = None):
         channel = self._resolve_channel(ctx, channel_arg)
@@ -646,7 +646,7 @@ class Factions(commands.Cog):
     # -------------------------------------------------------------------
     # >factions info / inf <name>
     # -------------------------------------------------------------------
-    @factions_group.command(name='info', aliases=['inf', 'show'])
+    @factions_group.command(name='info', aliases=['inf', 'show','información', 'informacion'])
     async def factions_info(self, ctx: commands.Context, *, name: str):
         info = await self._get_faction_info(ctx.guild.id, name.strip())
         if not info:
