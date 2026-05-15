@@ -804,10 +804,10 @@ class BotCommands(commands.Cog):
             value=(
                 "**factions** — Muestra influencia de facciones en este canal.\n"
                 "**factions** `#canal` — Muestra influencia en otro canal.\n"
+                "**factions show** `[#canal]` — Muestra información de una facción (admin).\n"
                 "**⚙️ factions create** `nombre` — Crea una facción (admin).\n"
                 "**⚙️ factions edit** `nombre` — Edita una facción (admin).\n"
                 "**⚙️ factions set** `#canal` `Facción1 10, Facción2 20` — Establece puntos (admin).\n"
-                "**⚙️ factions show** `[#canal]` — Muestra información de una facción (admin).\n"
                 "**⚙️ factions points** `[#canal] Facción +/-n` — Modifica puntos (admin).\n"
                 "**⚙️ factions location** `[#canal]` — Edita ubicación (admin).\n"
                 "**⚙️ factions modifiers** `[#canal]` — Config. modificadores semanales (admin)."

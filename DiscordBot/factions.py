@@ -338,7 +338,7 @@ class Factions(commands.Cog):
     # -------------------------------------------------------------------
     # >factions  (display)
     # -------------------------------------------------------------------
-    @commands.group(name='factions', aliases=['faction'], invoke_without_command=True)
+    @commands.group(name='factions', aliases=['faction', 'facciones', 'fa', 'f'], invoke_without_command=True)
     async def factions_group(self, ctx: commands.Context, channel_arg: str = None):
         try:
             channel = self._resolve_channel(ctx, channel_arg)
@@ -517,7 +517,7 @@ class Factions(commands.Cog):
         faction_name = None
         delta_str = None
 
-        # Attempt to resolve first argument as channel
+        # Attempt to resolve the first argument as a channel
         ch = self._resolve_channel(ctx, arg1) if arg1 else None
         if ch:
             channel = ch
@@ -525,13 +525,28 @@ class Factions(commands.Cog):
                 faction_name = arg2.strip()
                 delta_str = arg3.strip()
         else:
-            # arg1 is the faction name, arg2 is delta
             if arg1:
                 faction_name = arg1.strip()
                 delta_str = arg2.strip() if arg2 else None
 
+        # ---- No faction / delta → show points for all factions in the channel ----
+        if not faction_name and not delta_str:
+            points_data = await self._get_channel_points(ctx.guild.id, channel.id)
+            if not points_data:
+                await ctx.send(f'ℹ️ No hay puntos de facciones en {channel.mention}.')
+                return
+            lines = [f'**{f["name"]}**: {f["points"]} pts' for f in points_data]
+            embed = discord.Embed(
+                title=f'📊 Puntos en {channel.mention}',
+                description='\n'.join(lines),
+                color=discord.Color.blue()
+            )
+            await ctx.send(embed=embed)
+            return
+
+        # ---- Validate faction and delta ----
         if not faction_name or not delta_str:
-            await ctx.send('❌ Uso: `>factions points [canal] Facción +/-cantidad`')
+            await ctx.send('❌ Uso: `>factions points [canal] [Facción +/-cantidad]`')
             return
 
         info = await self._get_faction_info(ctx.guild.id, faction_name)
@@ -631,7 +646,7 @@ class Factions(commands.Cog):
     # -------------------------------------------------------------------
     # >factions info / inf <name>
     # -------------------------------------------------------------------
-    @factions_group.command(name='info', aliases=['inf'])
+    @factions_group.command(name='info', aliases=['inf', 'show'])
     async def factions_info(self, ctx: commands.Context, *, name: str):
         info = await self._get_faction_info(ctx.guild.id, name.strip())
         if not info:
@@ -655,7 +670,7 @@ class Factions(commands.Cog):
             for ch in channels:
                 channel_obj = self.bot.get_channel(int(ch['channel_id']))
                 ch_name = channel_obj.mention if channel_obj else f"<#{ch['channel_id']}>"
-                lines.append(f"{ch_name}: {ch['points']} pts ({ch['pct']:.1f}%) – {ch['status']}")
+                lines.append(f"{ch_name}: ({ch['pct']:.1f}%) – {ch['status']}")
             embed.add_field(name='📍 Territorios', value='\n'.join(lines[:20]), inline=False)
         else:
             embed.add_field(name='📍 Territorios', value='Sin influencia en ningún canal.', inline=False)
