@@ -7,7 +7,7 @@ from collections import defaultdict
 import discord
 from discord.ext import commands, tasks
 from PIL import Image, ImageDraw
-from .config import supabase, get_guild_cfg, utc_now_iso
+from .config import set_config, supabase, get_guild_cfg, utc_now_iso
 from .faction_views import (
     FactionCreateModal, LocationModal, ModifiersModal,
     CreateFactionButton, EditFactionButton, LocationButton, ModifiersButton
@@ -117,14 +117,33 @@ class Factions(commands.Cog):
 
     # -------------------------------------------------------------------
     # Weekly random modifiers
-    # -------------------------------------------------------------------
+        # -------------------------------------------------------------------
     @tasks.loop(hours=168)
     async def weekly_faction_modifiers(self):
         if not supabase:
             return
         try:
+            from .utils import get_current_week_start_str
+            current_week = get_current_week_start_str()
+
             mods = supabase.table('faction_modifiers').select('*').execute()
+
+            # Determine which guilds haven't been processed this week
+            guilds_to_process = set()
             for row in (mods.data or []):
+                gid_str = row['guild_id']
+                cfg = get_guild_cfg(int(gid_str))
+                last_week = cfg.get('last_faction_week')
+                if last_week != current_week:
+                    guilds_to_process.add(gid_str)
+
+            if not guilds_to_process:
+                print('[FACTIONS] Weekly modifiers: already applied for this week.')
+                return
+
+            for row in (mods.data or []):
+                if row['guild_id'] not in guilds_to_process:
+                    continue
                 if row['min_change'] == 0 and row['max_change'] == 0:
                     continue
                 delta = random.randint(row['min_change'], row['max_change'])
@@ -150,7 +169,12 @@ class Factions(commands.Cog):
                     int(row['guild_id']), int(row['channel_id']),
                     row['faction_name']
                 )
-            print('[FACTIONS] Weekly modifiers applied.')
+
+            # Mark all processed guilds as done for this week
+            for gid_str in guilds_to_process:
+                set_config(int(gid_str), 'last_faction_week', current_week)
+
+            print(f'[FACTIONS] Weekly modifiers applied to {len(guilds_to_process)} guild(s).')
         except Exception as e:
             print(f'[FACTIONS] Weekly modifier error: {e}')
 
@@ -258,26 +282,57 @@ class Factions(commands.Cog):
 
     @staticmethod
     def _resolve_channel(ctx: commands.Context, arg: str | None = None):
+        """Resolve a channel or thread from mention, ID, name, or default to current."""
         if arg is None:
             return ctx.channel
+
         raw = arg
         arg = _remove_invisible(raw).strip()
+
+        # 1) Channel/thread mention <#123…>
         if arg.startswith('<#') and arg.endswith('>'):
             id_str = arg[2:-1]
             if id_str.isdigit():
-                ch = ctx.guild.get_channel(int(id_str))
+                channel_id = int(id_str)
+                # Try regular channel first
+                ch = ctx.guild.get_channel(channel_id)
                 if ch:
                     return ch
+                # Then try threads
+                thread = ctx.guild.get_thread(channel_id)
+                if thread:
+                    return thread
+
+        # 2) Bare numeric ID
         if arg.isdigit():
-            ch = ctx.guild.get_channel(int(arg))
+            channel_id = int(arg)
+            ch = ctx.guild.get_channel(channel_id)
             if ch:
                 return ch
+            thread = ctx.guild.get_thread(channel_id)
+            if thread:
+                return thread
+
+        # 3) Name match in text channels
         ch = discord.utils.get(ctx.guild.text_channels, name=arg)
         if ch:
             return ch
+
+        # 4) Name match in active threads
+        thread = discord.utils.get(ctx.guild.threads, name=arg)
+        if thread:
+            return thread
+
+        # 5) Mention match (original string) – covers any missed format
         ch = discord.utils.get(ctx.guild.channels, mention=raw)
         if ch:
             return ch
+
+        # 6) Fallback: try mention match in threads (rare, but just in case)
+        thread = discord.utils.get(ctx.guild.threads, mention=raw)
+        if thread:
+            return thread
+
         return None
 
     # -------------------------------------------------------------------
