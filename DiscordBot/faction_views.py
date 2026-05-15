@@ -158,7 +158,7 @@ class LocationModal(discord.ui.Modal, title='Información de la ubicación'):
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
-            supabase.table('channel_locations').upsert({
+            data = {
                 'guild_id': str(self.guild_id),
                 'channel_id': str(self.channel_id),
                 'name': self.name_input.value.strip(),
@@ -166,15 +166,21 @@ class LocationModal(discord.ui.Modal, title='Información de la ubicación'):
                 'description': self.desc_input.value.strip(),
                 'image_url': self.image_input.value.strip(),
                 'updated_at': utc_now_iso()
-            }, on_conflict='guild_id,channel_id').execute()
-            await interaction.response.send_message(
-                '✅ Ubicación actualizada.', ephemeral=True
-            )
-        except Exception as e:
-            await interaction.response.send_message(
-                f'❌ Error: {e}', ephemeral=True
-            )
+            }
 
+            # Manual upsert to avoid unique‑constraint errors
+            existing = supabase.table('channel_locations') \
+                .select('id').eq('guild_id', str(self.guild_id)) \
+                .eq('channel_id', str(self.channel_id)).maybe_single().execute()
+            if existing and existing.data:
+                supabase.table('channel_locations').update(data) \
+                    .eq('id', existing.data['id']).execute()
+            else:
+                supabase.table('channel_locations').insert(data).execute()
+
+            await interaction.response.send_message('✅ Ubicación actualizada.', ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f'❌ Error: {e}', ephemeral=True)
 
 # ---------------------------------------------------------------------------
 # Modal: Weekly modifier ranges for factions in a channel
