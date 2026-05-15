@@ -590,7 +590,6 @@ class BotCommands(commands.Cog):
         await ctx.send("Quick scan finished.")
 
 
-
     @commands.command(aliases=["rutas", "availableroutes", "showroutes", "listroutes"])
     async def routes(self, ctx):
         """Show all available routes (canonical names) and their aliases."""
@@ -771,8 +770,6 @@ class BotCommands(commands.Cog):
                 "**item** `código:AE/:SB/:HE/:AC` — Muestra una habilidad específica (ej. `E001:AC`).\n"
                 "**loadout** — Lista tus equipaciones.\n"
                 "**loadout** `nombre` — Muestra una equipación concreta.\n"
-                "**routes** — Muestra todas las rutas disponibles y sus alias conocidos.\n"
-                "**route_entes** `ruta` — Lista todos los entes de una ruta (con imágenes y paginación)."
             ),
             inline=False
         )
@@ -796,7 +793,23 @@ class BotCommands(commands.Cog):
                 "**ping** — Verifica que el bot está online.\n"
                 "**refresh** — Actualiza la tabla de ítems desde Google Sheets y Drive.\n"
                 "**remove** `código` — Elimina entradas procesadas con ese código y sincroniza.\n"
-                "**push_logs** — Sube el archivo local `weekly_logs` a Supabase."
+                "**push_logs** — Sube el archivo local `weekly_logs` a Supabase.\n"
+                "**routes** — Muestra todas las rutas disponibles y sus alias conocidos.\n"
+                "**route_entes** `ruta` — Lista todos los entes de una ruta (con imágenes y paginación)."
+            ),
+            inline=False
+        )
+        embed.add_field(
+            name="⚔️ Sistema de Facciones",
+            value=(
+                "**factions** — Muestra influencia de facciones en este canal.\n"
+                "**factions** `#canal` — Muestra influencia en otro canal.\n"
+                "**⚙️ factions create** `nombre` — Crea una facción (admin).\n"
+                "**⚙️ factions edit** `nombre` — Edita una facción (admin).\n"
+                "**⚙️ factions set** `#canal` `F1 10, F2 20` — Establece puntos (admin).\n"
+                "**⚙️ factions points** `[#canal] Facción +/-n` — Modifica puntos (admin).\n"
+                "**⚙️ factions location** `[#canal]` — Edita ubicación (admin).\n"
+                "**⚙️ factions modifiers** `[#canal]` — Config. modificadores semanales (admin)."
             ),
             inline=False
         )
