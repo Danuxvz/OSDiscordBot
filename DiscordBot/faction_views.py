@@ -12,12 +12,14 @@ def _normalize_hex(color: str) -> str:
     c = color.strip().upper()
     return c if c.startswith('#') else f'#{c}'
 
-
 # ---------------------------------------------------------------------------
 # Modal: Create / Edit a faction
 # ---------------------------------------------------------------------------
 class FactionCreateModal(discord.ui.Modal, title='Crear / Editar Facción'):
-    def __init__(self, guild_id: int, faction_name: str = None):
+    def __init__(self, guild_id: int, faction_name: str = None,
+                 existing_description: str = "",
+                 existing_color: str = "#FFFFFF",
+                 existing_image_url: str = ""):
         super().__init__()
         self.guild_id = guild_id
         self.editing = faction_name is not None
@@ -37,6 +39,7 @@ class FactionCreateModal(discord.ui.Modal, title='Crear / Editar Facción'):
         self.color_input = discord.ui.TextInput(
             label='Color (hex, ej: #FF5733)',
             placeholder='#FF5733',
+            default=existing_color,
             required=False,
             max_length=7
         )
@@ -46,6 +49,7 @@ class FactionCreateModal(discord.ui.Modal, title='Crear / Editar Facción'):
         self.desc_input = discord.ui.TextInput(
             label='Descripción',
             placeholder='Una breve descripción de la facción...',
+            default=existing_description,
             required=False,
             max_length=500,
             style=discord.TextStyle.long
@@ -56,6 +60,7 @@ class FactionCreateModal(discord.ui.Modal, title='Crear / Editar Facción'):
         self.image_input = discord.ui.TextInput(
             label='URL de imagen (opcional)',
             placeholder='https://...',
+            default=existing_image_url,
             required=False,
             max_length=500
         )
@@ -66,10 +71,10 @@ class FactionCreateModal(discord.ui.Modal, title='Crear / Editar Facción'):
         color = _normalize_hex(self.color_input.value) if self.color_input.value.strip() else '#FFFFFF'
         if self.color_input.value.strip() and not _is_valid_hex(self.color_input.value):
             await interaction.response.send_message(
-                '❌ Color inválido. Usa formato hex como #FF5733.', ephemeral=True
+                '❌ Color inválido. Usa formato hex como #FF5733.',
+                ephemeral=True
             )
             return
-
         desc = self.desc_input.value.strip()
         image = self.image_input.value.strip()
 
@@ -84,30 +89,30 @@ class FactionCreateModal(discord.ui.Modal, title='Crear / Editar Facción'):
             }
 
             if self.editing:
-                # Update existing faction – delete old name row, insert new
-                supabase.table('factions').delete() \
-                    .eq('guild_id', str(self.guild_id)) \
-                    .eq('name', self.original_name).execute()
-                # Also rename in points/modifiers tables
-                for tbl in ('faction_points', 'faction_modifiers'):
-                    supabase.table(tbl).update({'faction_name': name}) \
-                        .eq('guild_id', str(self.guild_id)) \
-                        .eq('faction_name', self.original_name).execute()
-                payload['created_at'] = 'now()'  # keep original? we'll just insert new
-                supabase.table('factions').insert(payload).execute()
+                # Update existing faction – update the row instead of delete+insert
+                supabase.table('factions').update(payload).eq('guild_id', str(self.guild_id)).eq('name', self.original_name).execute()
+
+                # Also rename in points/modifiers tables if the name changed
+                if name != self.original_name:
+                    for tbl in ('faction_points', 'faction_modifiers'):
+                        supabase.table(tbl).update({'faction_name': name}).eq('guild_id', str(self.guild_id)).eq('faction_name', self.original_name).execute()
+
                 await interaction.response.send_message(
-                    f'✅ Facción **{name}** actualizada.', ephemeral=True
+                    f'✅ Facción **{name}** actualizada.',
+                    ephemeral=True
                 )
             else:
+                # Insert new faction
                 supabase.table('factions').insert(payload).execute()
                 await interaction.response.send_message(
-                    f'✅ Facción **{name}** creada.', ephemeral=True
+                    f'✅ Facción **{name}** creada.',
+                    ephemeral=True
                 )
         except Exception as e:
             await interaction.response.send_message(
-                f'❌ Error: {e}', ephemeral=True
+                f'❌ Error: {e}',
+                ephemeral=True
             )
-
 
 # ---------------------------------------------------------------------------
 # Modal: Location info (name, description, image, alias)
@@ -167,7 +172,6 @@ class LocationModal(discord.ui.Modal, title='Información de la ubicación'):
                 'image_url': self.image_input.value.strip(),
                 'updated_at': utc_now_iso()
             }
-
             # Manual upsert to avoid unique‑constraint errors
             existing = supabase.table('channel_locations') \
                 .select('id').eq('guild_id', str(self.guild_id)) \
@@ -177,17 +181,21 @@ class LocationModal(discord.ui.Modal, title='Información de la ubicación'):
                     .eq('id', existing.data['id']).execute()
             else:
                 supabase.table('channel_locations').insert(data).execute()
-
-            await interaction.response.send_message('✅ Ubicación actualizada.', ephemeral=True)
+            await interaction.response.send_message(
+                '✅ Ubicación actualizada.',
+                ephemeral=True
+            )
         except Exception as e:
-            await interaction.response.send_message(f'❌ Error: {e}', ephemeral=True)
+            await interaction.response.send_message(
+                f'❌ Error: {e}',
+                ephemeral=True
+            )
 
 # ---------------------------------------------------------------------------
 # Modal: Weekly modifier ranges for factions in a channel
 # ---------------------------------------------------------------------------
 class ModifiersModal(discord.ui.Modal):
-    def __init__(self, guild_id: int, channel_id: int, faction_names: list[str],
-                 current_mods: dict = None):
+    def __init__(self, guild_id: int, channel_id: int, faction_names: list[str], current_mods: dict = None):
         title = 'Modificadores semanales'
         if len(title) > 45:
             title = title[:45]
@@ -202,7 +210,6 @@ class ModifiersModal(discord.ui.Modal):
             cur = self.current.get(fname, {})
             min_str = str(cur.get('min_change', 0))
             max_str = str(cur.get('max_change', 0))
-
             label = f'{fname[:30]} (min,max)'
             if len(label) > 45:
                 label = label[:45]
@@ -243,21 +250,20 @@ class ModifiersModal(discord.ui.Modal):
                 }, on_conflict='guild_id,channel_id,faction_name').execute()
             except Exception as e:
                 errors.append(f'{fname}: {e}')
-
         if errors:
             await interaction.response.send_message(
-                f'⚠️ Algunos errores:\n' + '\n'.join(errors), ephemeral=True
+                f'⚠️ Algunos errores:\n' + '\n'.join(errors),
+                ephemeral=True
             )
         else:
             await interaction.response.send_message(
-                '✅ Modificadores actualizados.', ephemeral=True
+                '✅ Modificadores actualizados.',
+                ephemeral=True
             )
-
 
 # ---------------------------------------------------------------------------
 # Button views that open the modals when clicked
 # ---------------------------------------------------------------------------
-
 class CreateFactionButton(discord.ui.View):
     def __init__(self, guild_id: int, faction_name: str):
         super().__init__(timeout=300)
@@ -269,16 +275,30 @@ class CreateFactionButton(discord.ui.View):
         modal = FactionCreateModal(self.guild_id, self.faction_name)
         await interaction.response.send_modal(modal)
 
+
 class EditFactionButton(discord.ui.View):
-    def __init__(self, guild_id: int, faction_name: str):
+    def __init__(self, guild_id: int, faction_name: str,
+                 existing_description: str = "",
+                 existing_color: str = "#FFFFFF",
+                 existing_image_url: str = ""):
         super().__init__(timeout=300)
         self.guild_id = guild_id
         self.faction_name = faction_name
+        self.existing_description = existing_description
+        self.existing_color = existing_color
+        self.existing_image_url = existing_image_url
 
     @discord.ui.button(label='Abrir formulario de edición', style=discord.ButtonStyle.primary)
     async def open_modal(self, interaction: discord.Interaction, button: discord.ui.Button):
-        modal = FactionCreateModal(self.guild_id, self.faction_name)
+        modal = FactionCreateModal(
+            self.guild_id,
+            self.faction_name,
+            existing_description=self.existing_description,
+            existing_color=self.existing_color,
+            existing_image_url=self.existing_image_url
+        )
         await interaction.response.send_modal(modal)
+
 
 class LocationButton(discord.ui.View):
     def __init__(self, guild_id: int, channel_id: int, current_data: dict = None):
@@ -291,6 +311,7 @@ class LocationButton(discord.ui.View):
     async def open_modal(self, interaction: discord.Interaction, button: discord.ui.Button):
         modal = LocationModal(self.guild_id, self.channel_id, self.current_data)
         await interaction.response.send_modal(modal)
+
 
 class ModifiersButton(discord.ui.View):
     def __init__(self, guild_id: int, channel_id: int, faction_names: list[str], current_mods: dict = None):

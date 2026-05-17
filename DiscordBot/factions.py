@@ -440,7 +440,7 @@ class Factions(commands.Cog):
             await ctx.send('❌ Debes dar un nombre.')
             return
         view = CreateFactionButton(ctx.guild.id, faction_name)
-        await ctx.send(f'🖊️ Haz clic para configurar la facción **{faction_name}**:', view=view)
+        await ctx.send(f'🖊️ Haz click para configurar la facción **{faction_name}**:', view=view)
 
     # -------------------------------------------------------------------
     # >factions edit <name>
@@ -453,8 +453,15 @@ class Factions(commands.Cog):
         if not info:
             await ctx.send(f'❌ Facción **{faction_name}** no encontrada.')
             return
-        view = EditFactionButton(ctx.guild.id, info['name'])
-        await ctx.send(f'🖊️ Haz clic para editar la facción **{info["name"]}**:', view=view)
+        # Pass the existing data to the button
+        view = EditFactionButton(
+            guild_id=ctx.guild.id,
+            faction_name=info['name'],
+            existing_description=info.get('description', ''),
+            existing_color=info.get('color', '#FFFFFF'),
+            existing_image_url=info.get('image_url', '')
+        )
+        await ctx.send(f'🖊️ Haz click para editar la facción **{info["name"]}**:', view=view)
 
     # -------------------------------------------------------------------
     # >factions set [channel] F1 10, F2 20   (channel optional)
@@ -608,7 +615,7 @@ class Factions(commands.Cog):
             except Exception as e:
                 print(f'[FACTIONS] Error loading location for edit: {e}')
         view = LocationButton(ctx.guild.id, channel.id, current)
-        await ctx.send(f'📍 Haz clic para editar la ubicación de {channel.mention}:', view=view)
+        await ctx.send(f'📍 Haz click para editar la ubicación de {channel.mention}:', view=view)
 
     # -------------------------------------------------------------------
     # >factions modifiers / modifier / mod / mods [channel]
@@ -641,7 +648,7 @@ class Factions(commands.Cog):
             await ctx.send(f'⚠️ Demasiadas facciones ({len(faction_names)}). Solo se pueden editar las 5 primeras.')
             faction_names = faction_names[:5]
         view = ModifiersButton(ctx.guild.id, channel.id, faction_names, current_mods)
-        await ctx.send(f'🎲 Haz clic para configurar los modificadores semanales de {channel.mention}:', view=view)
+        await ctx.send(f'🎲 Haz click para configurar los modificadores semanales de {channel.mention}:', view=view)
 
     # -------------------------------------------------------------------
     # >factions info / inf <name>
