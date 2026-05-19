@@ -17,10 +17,8 @@ from .faction_views import (
 # Permission check
 # ---------------------------------------------------------------------------
 def is_admin_or_bot_admin(ctx: commands.Context) -> bool:
-    """Allow administrators and users with the 'Bot Admin' role."""
     if ctx.author.guild_permissions.administrator:
         return True
-    # Check for the role (case‑insensitive)
     return any(r.name.lower() == 'bot admin' for r in ctx.author.roles)
 
 # ---------------------------------------------------------------------------
@@ -116,11 +114,10 @@ class Factions(commands.Cog):
             print(f'[FACTIONS] Error initialising status cache: {e}')
 
     # -------------------------------------------------------------------
-    # Weekly random modifiers
+    # Weekly faction modifiers – check and apply once per week
     # -------------------------------------------------------------------
     @tasks.loop(minutes=60)
     async def faction_weekly_check(self):
-        """Runs every 60 minutes; applies modifiers if a new week has started."""
         if not supabase:
             return
         try:
@@ -136,6 +133,7 @@ class Factions(commands.Cog):
         if not mods or not mods.data:
             return
 
+        # Determine which guilds haven't been processed this week
         guilds_to_process = set()
         for row in mods.data:
             gid_str = row['guild_id']
@@ -147,6 +145,8 @@ class Factions(commands.Cog):
         if not guilds_to_process:
             return
 
+        # 1) Collect all point changes without writing yet
+        changes = defaultdict(lambda: defaultdict(int))  # guild_id -> channel_id -> faction_name -> delta
         for row in mods.data:
             if row['guild_id'] not in guilds_to_process:
                 continue
@@ -155,37 +155,86 @@ class Factions(commands.Cog):
             delta = random.randint(row['min_change'], row['max_change'])
             if delta == 0:
                 continue
-            pts = supabase.table('faction_points').select('points') \
-                .eq('guild_id', row['guild_id']) \
-                .eq('channel_id', row['channel_id']) \
-                .eq('faction_name', row['faction_name']) \
-                .maybe_single().execute()
-            if not pts:
-                continue
-            current = pts.data.get('points', 0) if pts.data else 0
-            new_points = max(0, current + delta)
-            supabase.table('faction_points').upsert({
-                'guild_id': row['guild_id'],
-                'channel_id': row['channel_id'],
-                'faction_name': row['faction_name'],
-                'points': new_points,
-                'updated_at': utc_now_iso()
-            }, on_conflict='guild_id,channel_id,faction_name').execute()
-            await self._check_status_change(
-                int(row['guild_id']), int(row['channel_id']),
-                row['faction_name']
-            )
+            gid = row['guild_id']
+            cid = row['channel_id']
+            fname = row['faction_name']
+            changes[gid][cid][fname] = changes[gid][cid].get(fname, 0) + delta
 
-        # Mark processed guilds as done for this week
+        if not changes:
+            # No actual changes, but mark guilds as processed
+            for gid_str in guilds_to_process:
+                set_config(int(gid_str), 'last_faction_week', current_week)
+            return
+
+        # 2) Apply changes to DB and collect affected channels
+        affected_channels = set()
+        for gid, ch_map in changes.items():
+            for cid, f_deltas in ch_map.items():
+                for fname, delta in f_deltas.items():
+                    # Get current points
+                    pts = supabase.table('faction_points').select('points') \
+                        .eq('guild_id', gid).eq('channel_id', cid).eq('faction_name', fname) \
+                        .maybe_single().execute()
+                    current = pts.data.get('points', 0) if pts and pts.data else 0
+                    new_points = max(0, current + delta)
+                    supabase.table('faction_points').upsert({
+                        'guild_id': gid,
+                        'channel_id': cid,
+                        'faction_name': fname,
+                        'points': new_points,
+                        'updated_at': utc_now_iso()
+                    }, on_conflict='guild_id,channel_id,faction_name').execute()
+                affected_channels.add((int(gid), int(cid)))
+
+        # 3) For each affected channel, compute final statuses and announce changes
+        for (guild_id, channel_id) in affected_channels:
+            await self._announce_all_status_changes(guild_id, channel_id)
+
+        # 4) Mark processed guilds
         for gid_str in guilds_to_process:
             set_config(int(gid_str), 'last_faction_week', current_week)
 
         print(f'[FACTIONS] Weekly modifiers applied to {len(guilds_to_process)} guild(s).')
 
+    async def _announce_all_status_changes(self, guild_id: int, channel_id: int):
+        """Recompute statuses for all factions in a channel and announce any changes."""
+        try:
+            points_data = await self._get_channel_points(guild_id, channel_id)
+        except Exception:
+            return
+        total = sum(f['points'] for f in points_data)
+        loc_name = 'esta ubicación'
+        if supabase:
+            try:
+                loc = supabase.table('channel_locations') \
+                    .select('name,alias').eq('guild_id', str(guild_id)) \
+                    .eq('channel_id', str(channel_id)).maybe_single().execute()
+                if loc and loc.data:
+                    loc_name = loc.data.get('alias') or loc.data.get('name') or loc_name
+            except Exception:
+                pass
+
+        channel = self.bot.get_channel(channel_id)
+        for f in points_data:
+            pct = (f['points'] / total * 100) if total > 0 else 0
+            new_status = get_status(pct)
+            cache_key = (guild_id, channel_id, f['name'].lower())
+            old_status = self._status_cache.get(cache_key)
+            if old_status != new_status and new_status is not None:
+                self._status_cache[cache_key] = new_status
+                if channel:
+                    try:
+                        await channel.send(
+                            f'📢 La influencia de **{f["name"]}** en **{loc_name}** cambió a **{new_status}**'
+                        )
+                    except Exception:
+                        pass
+
     # -------------------------------------------------------------------
-    # Status change detection & notification
+    # Status change detection & notification (used by manual commands)
     # -------------------------------------------------------------------
     async def _check_status_change(self, guild_id: int, channel_id: int, faction_name: str):
+        """Check and announce a single faction's status change (for manual updates)."""
         try:
             points_data = await self._get_channel_points(guild_id, channel_id)
         except Exception:
@@ -213,7 +262,7 @@ class Factions(commands.Cog):
             if channel:
                 try:
                     await channel.send(
-                        f'📢 **{faction_name}** influencia en **{loc_name}** cambió a **{new_status}**'
+                        f'📢 La influencia de **{faction_name}** en **{loc_name}** cambió a **{new_status}**'
                     )
                 except Exception:
                     pass
@@ -286,28 +335,20 @@ class Factions(commands.Cog):
 
     @staticmethod
     def _resolve_channel(ctx: commands.Context, arg: str | None = None):
-        """Resolve a channel or thread from mention, ID, name, or default to current."""
         if arg is None:
             return ctx.channel
-
         raw = arg
         arg = _remove_invisible(raw).strip()
-
-        # 1) Channel/thread mention <#123…>
         if arg.startswith('<#') and arg.endswith('>'):
             id_str = arg[2:-1]
             if id_str.isdigit():
                 channel_id = int(id_str)
-                # Try regular channel first
                 ch = ctx.guild.get_channel(channel_id)
                 if ch:
                     return ch
-                # Then try threads
                 thread = ctx.guild.get_thread(channel_id)
                 if thread:
                     return thread
-
-        # 2) Bare numeric ID
         if arg.isdigit():
             channel_id = int(arg)
             ch = ctx.guild.get_channel(channel_id)
@@ -316,27 +357,18 @@ class Factions(commands.Cog):
             thread = ctx.guild.get_thread(channel_id)
             if thread:
                 return thread
-
-        # 3) Name match in text channels
         ch = discord.utils.get(ctx.guild.text_channels, name=arg)
         if ch:
             return ch
-
-        # 4) Name match in active threads
         thread = discord.utils.get(ctx.guild.threads, name=arg)
         if thread:
             return thread
-
-        # 5) Mention match (original string) – covers any missed format
         ch = discord.utils.get(ctx.guild.channels, mention=raw)
         if ch:
             return ch
-
-        # 6) Fallback: try mention match in threads (rare, but just in case)
         thread = discord.utils.get(ctx.guild.threads, mention=raw)
         if thread:
             return thread
-
         return None
 
     # -------------------------------------------------------------------
@@ -436,7 +468,7 @@ class Factions(commands.Cog):
     # -------------------------------------------------------------------
     # >factions create <name>
     # -------------------------------------------------------------------
-    @factions_group.command(name='create', aliases=['crear'])
+    @factions_group.command(name='create')
     @commands.check(is_admin_or_bot_admin)
     async def factions_create(self, ctx: commands.Context, *, name: str):
         faction_name = name.strip()
@@ -444,12 +476,12 @@ class Factions(commands.Cog):
             await ctx.send('❌ Debes dar un nombre.')
             return
         view = CreateFactionButton(ctx.guild.id, faction_name)
-        await ctx.send(f'🖊️ Haz click para configurar la facción **{faction_name}**:', view=view)
+        await ctx.send(f'🖊️ Haz clic para configurar la facción **{faction_name}**:', view=view)
 
     # -------------------------------------------------------------------
     # >factions edit <name>
     # -------------------------------------------------------------------
-    @factions_group.command(name='edit', aliases=['update','editar'])
+    @factions_group.command(name='edit')
     @commands.check(is_admin_or_bot_admin)
     async def factions_edit(self, ctx: commands.Context, *, name: str):
         faction_name = name.strip()
@@ -457,23 +489,16 @@ class Factions(commands.Cog):
         if not info:
             await ctx.send(f'❌ Facción **{faction_name}** no encontrada.')
             return
-        # Pass the existing data to the button
-        view = EditFactionButton(
-            guild_id=ctx.guild.id,
-            faction_name=info['name'],
-            existing_description=info.get('description', ''),
-            existing_color=info.get('color', '#FFFFFF'),
-            existing_image_url=info.get('image_url', '')
-        )
-        await ctx.send(f'🖊️ Haz click para editar la facción **{info["name"]}**:', view=view)
+        view = EditFactionButton(ctx.guild.id, info['name'])
+        await ctx.send(f'🖊️ Haz clic para editar la facción **{info["name"]}**:', view=view)
 
     # -------------------------------------------------------------------
-    # >factions set [channel] F1 10, F2 20   (channel optional)
+    # >factions set [channel] F1 10, F2 20
     # -------------------------------------------------------------------
-    @factions_group.command(name='set', aliases=['assign','asignar'])
+    @factions_group.command(name='set')
     @commands.check(is_admin_or_bot_admin)
     async def factions_set(self, ctx: commands.Context, channel_arg: str = None, *, points_str: str = None):
-        channel = self._resolve_channel(ctx, channel_arg)  # None => ctx.channel
+        channel = self._resolve_channel(ctx, channel_arg)
         if channel is None:
             await ctx.send('❌ Canal no encontrado.')
             return
@@ -515,20 +540,21 @@ class Factions(commands.Cog):
                     'updated_at': utc_now_iso()
                 }, on_conflict='guild_id,channel_id,faction_name').execute()
             await ctx.send(f'✅ Puntos actualizados en {channel.mention}.')
+            # After all points set, announce all changes at once
+            await self._announce_all_status_changes(ctx.guild.id, channel.id)
         except Exception as e:
             await ctx.send(f'❌ Error: {e}')
 
     # -------------------------------------------------------------------
-    # >factions points [#canal] Faction +/-n
+    # >factions points [#canal] [Faction +/-n]
     # -------------------------------------------------------------------
-    @factions_group.command(name='points', aliases=['point', 'pts','puntos'])
+    @factions_group.command(name='points')
     @commands.check(is_admin_or_bot_admin)
     async def factions_points(self, ctx: commands.Context, arg1: str = None, arg2: str = None, arg3: str = None):
         channel = ctx.channel
         faction_name = None
         delta_str = None
 
-        # Attempt to resolve the first argument as a channel
         ch = self._resolve_channel(ctx, arg1) if arg1 else None
         if ch:
             channel = ch
@@ -540,7 +566,7 @@ class Factions(commands.Cog):
                 faction_name = arg1.strip()
                 delta_str = arg2.strip() if arg2 else None
 
-        # ---- No faction / delta → show points for all factions in the channel ----
+        # Show all points if no faction/delta
         if not faction_name and not delta_str:
             points_data = await self._get_channel_points(ctx.guild.id, channel.id)
             if not points_data:
@@ -555,7 +581,6 @@ class Factions(commands.Cog):
             await ctx.send(embed=embed)
             return
 
-        # ---- Validate faction and delta ----
         if not faction_name or not delta_str:
             await ctx.send('❌ Uso: `>factions points [canal] [Facción +/-cantidad]`')
             return
@@ -594,6 +619,7 @@ class Factions(commands.Cog):
                 'updated_at': utc_now_iso()
             }, on_conflict='guild_id,channel_id,faction_name').execute()
             await ctx.send(f'✅ **{real_name}**: {current} → {new_pts} pts en {channel.mention}')
+            # Single faction change – check immediately
             await self._check_status_change(ctx.guild.id, channel.id, real_name)
         except Exception as e:
             await ctx.send(f'❌ Error: {e}')
@@ -601,7 +627,7 @@ class Factions(commands.Cog):
     # -------------------------------------------------------------------
     # >factions location / loc [channel]
     # -------------------------------------------------------------------
-    @factions_group.command(name='location', aliases=['loc','ubicacion', 'ubicación'])
+    @factions_group.command(name='location', aliases=['loc'])
     @commands.check(is_admin_or_bot_admin)
     async def factions_location(self, ctx: commands.Context, channel_arg: str = None):
         channel = self._resolve_channel(ctx, channel_arg)
@@ -619,12 +645,12 @@ class Factions(commands.Cog):
             except Exception as e:
                 print(f'[FACTIONS] Error loading location for edit: {e}')
         view = LocationButton(ctx.guild.id, channel.id, current)
-        await ctx.send(f'📍 Haz click para editar la ubicación de {channel.mention}:', view=view)
+        await ctx.send(f'📍 Haz clic para editar la ubicación de {channel.mention}:', view=view)
 
     # -------------------------------------------------------------------
     # >factions modifiers / modifier / mod / mods [channel]
     # -------------------------------------------------------------------
-    @factions_group.command(name='modifiers', aliases=['modifier', 'mod', 'mods','modificador'])
+    @factions_group.command(name='modifiers', aliases=['modifier', 'mod', 'mods'])
     @commands.check(is_admin_or_bot_admin)
     async def factions_modifiers(self, ctx: commands.Context, channel_arg: str = None):
         channel = self._resolve_channel(ctx, channel_arg)
@@ -652,12 +678,12 @@ class Factions(commands.Cog):
             await ctx.send(f'⚠️ Demasiadas facciones ({len(faction_names)}). Solo se pueden editar las 5 primeras.')
             faction_names = faction_names[:5]
         view = ModifiersButton(ctx.guild.id, channel.id, faction_names, current_mods)
-        await ctx.send(f'🎲 Haz click para configurar los modificadores semanales de {channel.mention}:', view=view)
+        await ctx.send(f'🎲 Haz clic para configurar los modificadores semanales de {channel.mention}:', view=view)
 
     # -------------------------------------------------------------------
-    # >factions info / inf <name>
+    # >factions info / inf / show <name>
     # -------------------------------------------------------------------
-    @factions_group.command(name='info', aliases=['inf', 'show','información', 'informacion'])
+    @factions_group.command(name='info', aliases=['inf', 'show'])
     async def factions_info(self, ctx: commands.Context, *, name: str):
         info = await self._get_faction_info(ctx.guild.id, name.strip())
         if not info:
