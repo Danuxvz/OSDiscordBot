@@ -16,7 +16,7 @@ if SUPABASE_URL and SUPABASE_KEY:
 	supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # In-memory cache
-config_cache: Dict[str, Dict[str, Any]] = {}          # guild_id -> {"data": {...}, "updated_at": "..."}
+config_cache: Dict[str, Dict[str, Any]] = {}
 config_dirty: set = set()
 
 CONFIG_SYNC_INTERVAL = 300

@@ -19,13 +19,15 @@ class FactionCreateModal(discord.ui.Modal, title='Crear / Editar Facción'):
     def __init__(self, guild_id: int, faction_name: str = None,
                  existing_description: str = "",
                  existing_color: str = "#FFFFFF",
-                 existing_image_url: str = ""):
+                 existing_image_url: str = "",
+                 create_mode: bool = False):          # NEW PARAMETER
         super().__init__()
         self.guild_id = guild_id
-        self.editing = faction_name is not None
-        self.original_name = faction_name
+        self.create_mode = create_mode                # NEW
+        self.editing = not create_mode and faction_name is not None   # FIXED
+        self.original_name = faction_name if not create_mode else None
 
-        # Name field (pre‑filled when editing)
+        # Name field (pre‑filled when editing OR when creating from command)
         self.name_input = discord.ui.TextInput(
             label='Nombre de la facción',
             placeholder='Ej: Carnaval',
@@ -89,7 +91,7 @@ class FactionCreateModal(discord.ui.Modal, title='Crear / Editar Facción'):
             }
 
             if self.editing:
-                # Update existing faction – update the row instead of delete+insert
+                # Update existing faction
                 supabase.table('factions').update(payload).eq('guild_id', str(self.guild_id)).eq('name', self.original_name).execute()
 
                 # Also rename in points/modifiers tables if the name changed
@@ -272,7 +274,7 @@ class CreateFactionButton(discord.ui.View):
 
     @discord.ui.button(label='Abrir formulario', style=discord.ButtonStyle.primary)
     async def open_modal(self, interaction: discord.Interaction, button: discord.ui.Button):
-        modal = FactionCreateModal(self.guild_id, self.faction_name)
+        modal = FactionCreateModal(self.guild_id, self.faction_name, create_mode=True)
         await interaction.response.send_modal(modal)
 
 

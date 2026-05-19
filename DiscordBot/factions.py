@@ -117,66 +117,70 @@ class Factions(commands.Cog):
 
     # -------------------------------------------------------------------
     # Weekly random modifiers
-        # -------------------------------------------------------------------
-    @tasks.loop(hours=168)
-    async def weekly_faction_modifiers(self):
+    # -------------------------------------------------------------------
+    @tasks.loop(minutes=60)
+    async def faction_weekly_check(self):
+        """Runs every 60 minutes; applies modifiers if a new week has started."""
         if not supabase:
             return
         try:
-            from .utils import get_current_week_start_str
-            current_week = get_current_week_start_str()
-
-            mods = supabase.table('faction_modifiers').select('*').execute()
-
-            # Determine which guilds haven't been processed this week
-            guilds_to_process = set()
-            for row in (mods.data or []):
-                gid_str = row['guild_id']
-                cfg = get_guild_cfg(int(gid_str))
-                last_week = cfg.get('last_faction_week')
-                if last_week != current_week:
-                    guilds_to_process.add(gid_str)
-
-            if not guilds_to_process:
-                print('[FACTIONS] Weekly modifiers: already applied for this week.')
-                return
-
-            for row in (mods.data or []):
-                if row['guild_id'] not in guilds_to_process:
-                    continue
-                if row['min_change'] == 0 and row['max_change'] == 0:
-                    continue
-                delta = random.randint(row['min_change'], row['max_change'])
-                if delta == 0:
-                    continue
-                pts = supabase.table('faction_points').select('points') \
-                    .eq('guild_id', row['guild_id']) \
-                    .eq('channel_id', row['channel_id']) \
-                    .eq('faction_name', row['faction_name']) \
-                    .maybe_single().execute()
-                if not pts:
-                    continue
-                current = pts.data.get('points', 0) if pts.data else 0
-                new_points = max(0, current + delta)
-                supabase.table('faction_points').upsert({
-                    'guild_id': row['guild_id'],
-                    'channel_id': row['channel_id'],
-                    'faction_name': row['faction_name'],
-                    'points': new_points,
-                    'updated_at': utc_now_iso()
-                }, on_conflict='guild_id,channel_id,faction_name').execute()
-                await self._check_status_change(
-                    int(row['guild_id']), int(row['channel_id']),
-                    row['faction_name']
-                )
-
-            # Mark all processed guilds as done for this week
-            for gid_str in guilds_to_process:
-                set_config(int(gid_str), 'last_faction_week', current_week)
-
-            print(f'[FACTIONS] Weekly modifiers applied to {len(guilds_to_process)} guild(s).')
+            await self._apply_weekly_modifiers_if_new_week()
         except Exception as e:
-            print(f'[FACTIONS] Weekly modifier error: {e}')
+            print(f'[FACTIONS] Weekly check error: {e}')
+
+    async def _apply_weekly_modifiers_if_new_week(self):
+        from .utils import get_current_week_start_str
+        current_week = get_current_week_start_str()
+
+        mods = supabase.table('faction_modifiers').select('*').execute()
+        if not mods or not mods.data:
+            return
+
+        guilds_to_process = set()
+        for row in mods.data:
+            gid_str = row['guild_id']
+            cfg = get_guild_cfg(int(gid_str))
+            last_week = cfg.get('last_faction_week')
+            if last_week != current_week:
+                guilds_to_process.add(gid_str)
+
+        if not guilds_to_process:
+            return
+
+        for row in mods.data:
+            if row['guild_id'] not in guilds_to_process:
+                continue
+            if row['min_change'] == 0 and row['max_change'] == 0:
+                continue
+            delta = random.randint(row['min_change'], row['max_change'])
+            if delta == 0:
+                continue
+            pts = supabase.table('faction_points').select('points') \
+                .eq('guild_id', row['guild_id']) \
+                .eq('channel_id', row['channel_id']) \
+                .eq('faction_name', row['faction_name']) \
+                .maybe_single().execute()
+            if not pts:
+                continue
+            current = pts.data.get('points', 0) if pts.data else 0
+            new_points = max(0, current + delta)
+            supabase.table('faction_points').upsert({
+                'guild_id': row['guild_id'],
+                'channel_id': row['channel_id'],
+                'faction_name': row['faction_name'],
+                'points': new_points,
+                'updated_at': utc_now_iso()
+            }, on_conflict='guild_id,channel_id,faction_name').execute()
+            await self._check_status_change(
+                int(row['guild_id']), int(row['channel_id']),
+                row['faction_name']
+            )
+
+        # Mark processed guilds as done for this week
+        for gid_str in guilds_to_process:
+            set_config(int(gid_str), 'last_faction_week', current_week)
+
+        print(f'[FACTIONS] Weekly modifiers applied to {len(guilds_to_process)} guild(s).')
 
     # -------------------------------------------------------------------
     # Status change detection & notification
@@ -688,8 +692,6 @@ class Factions(commands.Cog):
     # -------------------------------------------------------------------
     @commands.Cog.listener()
     async def on_ready(self):
-        # Build the initial status cache so that the first weekly modifier run
-        # doesn’t falsely announce a status change.
         await self.init_status_cache()
-        if not self.weekly_faction_modifiers.is_running():
-            self.weekly_faction_modifiers.start()
+        if not self.faction_weekly_check.is_running():
+            self.faction_weekly_check.start()

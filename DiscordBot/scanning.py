@@ -4,7 +4,7 @@ import random
 import asyncio
 import discord
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from .config import supabase, get_guild_cfg, set_config
 from .utils import get_local_now, get_current_week_range, get_current_week_start_str, get_weekly_log_path, utc_now_iso
 from .items import load_items_table
@@ -56,11 +56,10 @@ async def deliver_item(bot, ops_channel, item_id, target_code, message_id, route
             if attempt == max_retries - 1:
                 print(f"[DELIVERY] Failed to send command after {max_retries} attempts: {e}")
                 return {"success": False, "error_message": str(e), "transaction_id": None}
-            await asyncio.sleep(2 ** attempt)  # exponential backoff
+            await asyncio.sleep(2 ** attempt)
 
     print(f"[DELIVERY] Sent: {cmd}")
 
-    # Identify the bot by its permanent ID (name-agnostic)
     def is_rpforge(msg):
         return (
             msg.channel == ops_channel
@@ -155,7 +154,7 @@ async def deliver_item(bot, ops_channel, item_id, target_code, message_id, route
         "raw_response": raw_response
     }
 
-async def scan_guild(bot, guild_id, force=False):
+async def scan_guild(bot, guild_id, force=False, week_start=None):
     cfg = get_guild_cfg(guild_id)
     scan_hour = cfg.get("scan_hour", 17)
     now = get_local_now()
@@ -181,7 +180,18 @@ async def scan_guild(bot, guild_id, force=False):
             print(f"[SCAN] cannot find channel {busq_ch_id} for guild {guild_id}")
             return
 
-        start, end = get_current_week_range()
+        # Determine week range: if week_start provided, use it, else current week
+        if week_start:
+            try:
+                start_date = datetime.strptime(week_start, "%Y-%m-%d").date()
+                local_now = get_local_now()
+                start = datetime.combine(start_date, datetime.min.time(), tzinfo=local_now.tzinfo)
+                end = start + timedelta(days=6)
+            except Exception:
+                start, end = get_current_week_range()
+        else:
+            start, end = get_current_week_range()
+
         week_start_str = start.date().isoformat()
         log_path = get_weekly_log_path(start, guild_id)
 
@@ -235,7 +245,7 @@ async def scan_guild(bot, guild_id, force=False):
             mapped_routes = []
             invalid_routes = []
             for raw_route in parsed["rutas"]:
-                matched = await match_route(raw_route, items_table, guild_id=guild_id)
+                matched = match_route(raw_route, items_table)
                 if not matched:
                     invalid_routes.append(raw_route)
                 else:
@@ -464,6 +474,17 @@ async def check_weekly_thread(bot):
             if not channel:
                 print(f"[WEEK] cannot find channel {busq_ch_id} for guild {guild_id}")
                 continue
+
+            # Final scan of the previous week's thread before creating the new one
+            if last_week is not None:
+                try:
+                    old_week_date = datetime.strptime(last_week, "%Y%m%d").date()
+                    old_week_start_str = old_week_date.isoformat()
+                    print(f"[WEEK] Final scan of previous week ({old_week_start_str}) for guild {guild_id}")
+                    await scan_guild(bot, guild_id, force=True, week_start=old_week_start_str)
+                except Exception as e:
+                    print(f"[WEEK] Error during final scan: {e}")
+
             title = f"BUSQUEDAS {start.strftime('%d %b')} - {end.strftime('%d %b')}"
             thread = discord.utils.get(channel.threads, name=title)
             if not thread:
