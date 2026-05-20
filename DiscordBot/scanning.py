@@ -245,7 +245,7 @@ async def scan_guild(bot, guild_id, force=False, week_start=None):
             mapped_routes = []
             invalid_routes = []
             for raw_route in parsed["rutas"]:
-                matched = match_route(raw_route, items_table)
+                matched = await match_route(raw_route, items_table)
                 if not matched:
                     invalid_routes.append(raw_route)
                 else:
