@@ -23,27 +23,22 @@ def parse_csv_to_items_table(csv_text):
         ID = (row.get("id") or "").strip()
         tier = (row.get("tier") or "").strip().upper() or "E"
         name = (row.get("name") or "").strip()
-        rutas_str = (row.get("rutas") or "").strip()
+        rutas = (row.get("rutas") or "").strip()
         clase = (row.get("clase") or "").strip()
         elemento = (row.get("elemento") or "").strip()
-
-        if not rutas_str:
+        if not rutas:
             continue
-
-        routes = [r.strip() for r in rutas_str.split(",") if r.strip()]
-
-        for route in routes:
-            route_key = route
-            tier_key = tier
-            entry = {
-                "id": ID,
-                "tier": tier_key,
-                "name": name,
-                "ruta": route_key,
-                "clase": clase,
-                "elemento": elemento,
-            }
-            table.setdefault(route_key, {}).setdefault(tier_key, []).append(entry)
+        route_key = rutas
+        tier_key = tier
+        entry = {
+            "id": ID,
+            "tier": tier_key,
+            "name": name,
+            "ruta": route_key,
+            "clase": clase,
+            "elemento": elemento,
+        }
+        table.setdefault(route_key, {}).setdefault(tier_key, []).append(entry)
     return table
 
 def save_items_table(table):
@@ -72,6 +67,11 @@ async def refresh_items_table():
         print(f"✅ Items table refreshed: {len(table)} routes loaded.")
         await asyncio.to_thread(refresh_images_from_drive)
         print("✅ Images table refreshed")
+
+        # Invalidate and rebuild the image index
+        from .views import build_image_index
+        await asyncio.to_thread(build_image_index)
+
         return True
     except Exception as e:
         print("Failed to refresh items table:", e)

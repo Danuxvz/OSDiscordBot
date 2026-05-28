@@ -15,7 +15,10 @@ from .utils import get_current_week_start_str, get_current_week_range, get_weekl
 from .items import refresh_items_table, load_items_table
 from .scanning import scan_guild, check_weekly_thread
 from .routes import VALID_ROUTES, match_route
-from .views import EnteView, find_item, load_sheet, find_image, UNLOCK_SHEET_URL, ENTE_SHEET_URL, normalize_id
+from .views import (
+    EnteView, find_item, load_sheet, find_image, UNLOCK_SHEET_URL, ENTE_SHEET_URL, normalize_id,
+    get_cached_unlocks_async, get_cached_entes_async, find_image_cached
+)
 from .routes import VALID_ROUTES, load_guild_aliases, get_alias_map
 
 # Constants for card display
@@ -53,7 +56,7 @@ CARD_EMOJIS = {
 class RouteEntesView(discord.ui.View):
     def __init__(self, items, route_name, timeout=120):
         super().__init__(timeout=timeout)
-        self.items = items          # list of item dicts
+        self.items = items
         self.route_name = route_name
         self.page = 0
         self.items_per_page = 10
@@ -86,8 +89,8 @@ class RouteEntesView(discord.ui.View):
         embeds, files = self.get_page_data()
         await interaction.response.edit_message(embeds=embeds, attachments=files, view=self)
         # Disable buttons if on first/last page
-        self.children[0].disabled = (self.page == 0)                     # Previous button
-        self.children[1].disabled = (self.page >= (len(self.items)-1) // self.items_per_page)  # Next button
+        self.children[0].disabled = (self.page == 0) # Previous button
+        self.children[1].disabled = (self.page >= (len(self.items)-1) // self.items_per_page) # Next button
         await interaction.followup.edit_message(interaction.message.id, view=self)
 
     @discord.ui.button(label="◀ Previous", style=discord.ButtonStyle.primary)
@@ -110,7 +113,7 @@ class RouteEntesView(discord.ui.View):
 class BotCommands(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self._he_metadata = None   # lazy‑loaded cache for HE metadata
+        self._he_metadata = None
 
     # -----------------------------------------------------------------
     # Helper methods for safe parsing and formatting
@@ -593,7 +596,7 @@ class BotCommands(commands.Cog):
     @commands.command(aliases=["rutas", "availableroutes", "showroutes", "listroutes"])
     async def routes(self, ctx):
         """Show all available routes (canonical names) and their aliases."""
-        items_table = load_items_table()  # from your items.py
+        items_table = load_items_table()
         all_routes = sorted(items_table.keys())
 
         if not all_routes:
@@ -603,12 +606,10 @@ class BotCommands(commands.Cog):
         # Load guild aliases to show them too
         guild_aliases = await load_guild_aliases(str(ctx.guild.id))
         alias_map = get_alias_map(guild_aliases)
-        # Build reverse mapping: canonical -> list of aliases (excluding built‑in if you want)
         reverse_aliases = {}
         for alias, canon in alias_map.items():
             reverse_aliases.setdefault(canon, []).append(alias)
 
-        # Create embed with chunks
         embed = discord.Embed(
             title="📍 Rutas disponibles",
             description=f"Total: {len(all_routes)} rutas",
@@ -620,7 +621,6 @@ class BotCommands(commands.Cog):
             value = "\n".join(f"• **{r}**" for r in chunk)
             embed.add_field(name="\u200b", value=value, inline=True)
 
-        # Add a separate field for aliases (optional, can be lengthy)
         if reverse_aliases:
             alias_text = "\n".join(f"**{c}** → {', '.join(a[:3])}" for c, a in list(reverse_aliases.items())[:10])
             embed.add_field(name="Alias conocidos", value=alias_text[:1024], inline=False)
@@ -635,7 +635,6 @@ class BotCommands(commands.Cog):
             await ctx.send("❌ Supabase not configured.")
             return
 
-        # Validate canonical route exists
         items_table = load_items_table()
         if canonical not in items_table:
             await ctx.send(f"❌ Route `{canonical}` not found in the items sheet.")
@@ -645,7 +644,6 @@ class BotCommands(commands.Cog):
         guild_id = str(ctx.guild.id)
 
         try:
-            # Insert or replace (if alias already exists, upsert)
             supabase.table("route_aliases").upsert({
                 "guild_id": guild_id,
                 "canonical": canonical,
@@ -728,18 +726,15 @@ class BotCommands(commands.Cog):
 
             print(f"[DEBUG] Total unique items: {len(items_by_id)}")
 
-            # Sort: higher tier first (C > D > E) then by ID
             tier_order = {"C": 0, "D": 1, "E": 2}
             sorted_items = sorted(
                 items_by_id.values(),
                 key=lambda x: (tier_order.get(x["tier"], 3), x["id"])
             )
 
-            # Create view and send first page
             view = RouteEntesView(sorted_items, canonical_route)
             embeds, files = view.get_page_data()
             await ctx.send(embeds=embeds, files=files, view=view)            
-
 
         except Exception as e:
             import traceback
@@ -834,7 +829,6 @@ class BotCommands(commands.Cog):
             await ctx.send("❌ Supabase not configured.")
             return
 
-        # Normalize input
         codigo = codigo.upper().strip()
         if not re.match(r'^[A-Z]{1,4}\d{1,4}$', codigo):
             await ctx.send("❌ Formato inválido. Ejemplo: A123 o XYZ789.")
@@ -848,7 +842,6 @@ class BotCommands(commands.Cog):
         removed_local = 0
         removed_supabase = 0
 
-        # 1. Clean local log file
         if os.path.exists(log_path):
             try:
                 with open(log_path, "r", encoding="utf-8") as f:
@@ -864,7 +857,6 @@ class BotCommands(commands.Cog):
                 await ctx.send(f"❌ Local log error: {e}")
                 return
 
-        # 2. Update Supabase weekly_logs
         try:
             res = supabase.table("weekly_logs") \
                 .select("data") \
@@ -943,6 +935,9 @@ class BotCommands(commands.Cog):
         except Exception as e:
             await ctx.send(f"❌ Error: {e}")
 
+    # -----------------------------------------------------------------
+    # Item command (optimised with caching)
+    # -----------------------------------------------------------------
     @commands.command(aliases=["iteminfo", "items", "skill", "skillinfo", "i", "ente", "entes", "unlocks", "unlock", "ability", "abilityinfo", "card", "cards"])
     async def item(self, ctx):
         parts = ctx.message.content.split(maxsplit=1)
@@ -960,23 +955,21 @@ class BotCommands(commands.Cog):
             suffix = "AE"
             unlock_query = False
 
-        # Load sheets
+        # Load sheets using caches
         try:
-            unlocks = load_sheet(UNLOCK_SHEET_URL)
-            entes = load_sheet(ENTE_SHEET_URL)
+            unlocks = await get_cached_unlocks_async()
+            entes = await get_cached_entes_async()
         except Exception as e:
             await ctx.send(f"❌ Error loading sheet: `{e}`")
             return
 
         if unlock_query:
             full_id = f"{base_id}:{suffix}"
-            # Direct lookup in unlock sheet by full ID
             row = unlocks.get(full_id)
             if not row:
                 await ctx.send("❌ Item not found in unlocks.")
                 return
 
-            # Build embed
             title = row.get("title") or row.get("name") or "Unknown"
             desc = row.get("description", "")
             typ = row.get("type", "Unknown")
@@ -996,7 +989,6 @@ class BotCommands(commands.Cog):
                     "HE": "he",
                     "AC": "armor"
                 }
-
                 emoji_name = PREFIX_MAP.get(suffix, suffix.lower())
                 prefix = discord.utils.get(ctx.guild.emojis, name=emoji_name)
                 prefix_str = str(prefix) if prefix else f"{suffix}:"
@@ -1011,8 +1003,8 @@ class BotCommands(commands.Cog):
             embed.add_field(name="Type", value=typ)
             embed.add_field(name="Unlocked At", value=f"{base_id} x{mult}")
 
-            file, url = None, None
-            img_path = find_image(base_id)
+            img_path = find_image_cached(base_id)
+            file = None
             if img_path:
                 file = discord.File(img_path, filename=os.path.basename(img_path))
                 url = f"attachment://{os.path.basename(img_path)}"
@@ -1022,7 +1014,6 @@ class BotCommands(commands.Cog):
                 await ctx.send(embed=embed, file=file)
             else:
                 await ctx.send(embed=embed)
-
             return
 
         # Base ente
@@ -1038,8 +1029,8 @@ class BotCommands(commands.Cog):
             color=discord.Color.blurple()
         )
         embed.add_field(name="Element", value=element)
-        file, url = None, None
-        img_path = find_image(base_id)
+        img_path = find_image_cached(base_id)
+        file = None
         if img_path:
             file = discord.File(img_path, filename=os.path.basename(img_path))
             url = f"attachment://{os.path.basename(img_path)}"
@@ -1264,7 +1255,6 @@ class BotCommands(commands.Cog):
             await ctx.send("📭 No hay registros de entregas para este servidor.")
             return
 
-        # Crear CSV en memoria
         output = io.StringIO()
         writer = csv.writer(output)
 
@@ -1293,7 +1283,6 @@ class BotCommands(commands.Cog):
             filename=f"entregas_{ctx.guild.id}.csv"
         )
 
-        # Estadísticas para el embed
         success_count = sum(1 for r in data if r.get("success"))
         fail_count = len(data) - success_count
 
