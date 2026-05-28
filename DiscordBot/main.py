@@ -52,9 +52,10 @@ async def on_ready():
     print(f"Logged in as {bot.user}!")
     await load_config_from_db()
     await pull_updates_from_db()
-    # Sync slash commands
+    # Preload sheet and image caches now so >item is instant
     await preload_caches()
     print("Caches preloaded.")
+    # Start background tasks
     asyncio.create_task(config_sync_loop())
     check_weekly_thread_task.start()
     scan_busquedas_thread.start()
@@ -63,6 +64,11 @@ async def on_ready():
 async def on_command_error(ctx, error):
     if isinstance(error, commands.MissingPermissions):
         await ctx.reply("❌ No tienes permisos para usar este comando.", mention_author=False)
+    elif isinstance(error, commands.CheckFailure):
+        await ctx.reply(
+            "❌ Necesitas el rol **Bot Admin** o ser Administrador para usar este comando.",
+            mention_author=False
+        )
     else:
         raise error
 
@@ -74,6 +80,5 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
 
 # python -m DiscordBot.main

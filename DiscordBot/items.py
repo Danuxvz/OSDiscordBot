@@ -8,6 +8,7 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 from .utils import local_md5
+from .views import invalidate_all_caches, build_image_index
 
 ITEMS_TABLE_FILE = "items_table.json"
 IMAGES_DIR = "ENTES"
@@ -68,8 +69,8 @@ async def refresh_items_table():
         await asyncio.to_thread(refresh_images_from_drive)
         print("✅ Images table refreshed")
 
-        # Invalidate and rebuild the image index
-        from .views import build_image_index
+        # Invalidate all caches and rebuild the image index
+        invalidate_all_caches()
         await asyncio.to_thread(build_image_index)
 
         return True

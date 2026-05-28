@@ -84,7 +84,7 @@ def faction_sort_key(f):
 class Factions(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self._status_cache = {}          # (guild_id, channel_id, faction_lower) -> status
+        self._status_cache = {}
 
     # -------------------------------------------------------------------
     # Cache initialisation (prevents false announcements on restart)
@@ -133,7 +133,6 @@ class Factions(commands.Cog):
         if not mods or not mods.data:
             return
 
-        # Determine which guilds haven't been processed this week
         guilds_to_process = set()
         for row in mods.data:
             gid_str = row['guild_id']
@@ -145,8 +144,8 @@ class Factions(commands.Cog):
         if not guilds_to_process:
             return
 
-        # 1) Collect all point changes without writing yet
-        changes = {}  # guild_id -> channel_id -> faction_name -> delta
+        # Collect all changes first, then apply
+        changes = {}
         for row in mods.data:
             if row['guild_id'] not in guilds_to_process:
                 continue
@@ -162,17 +161,14 @@ class Factions(commands.Cog):
             changes[gid][cid][fname] += delta
 
         if not changes:
-            # No actual changes, but mark guilds as processed
             for gid_str in guilds_to_process:
                 set_config(int(gid_str), 'last_faction_week', current_week)
             return
 
-        # 2) Apply changes to DB and collect affected channels
         affected_channels = set()
         for gid, ch_map in changes.items():
             for cid, f_deltas in ch_map.items():
                 for fname, delta in f_deltas.items():
-                    # Get current points
                     pts = supabase.table('faction_points').select('points') \
                         .eq('guild_id', gid).eq('channel_id', cid).eq('faction_name', fname) \
                         .maybe_single().execute()
@@ -187,18 +183,15 @@ class Factions(commands.Cog):
                     }, on_conflict='guild_id,channel_id,faction_name').execute()
                 affected_channels.add((int(gid), int(cid)))
 
-        # 3) For each affected channel, compute final statuses and announce changes
         for (guild_id, channel_id) in affected_channels:
             await self._announce_all_status_changes(guild_id, channel_id)
 
-        # 4) Mark processed guilds
         for gid_str in guilds_to_process:
             set_config(int(gid_str), 'last_faction_week', current_week)
 
         print(f'[FACTIONS] Weekly modifiers applied to {len(guilds_to_process)} guild(s).')
 
     async def _announce_all_status_changes(self, guild_id: int, channel_id: int):
-        """Recompute statuses for all factions in a channel and announce any changes."""
         try:
             points_data = await self._get_channel_points(guild_id, channel_id)
         except Exception:
@@ -231,11 +224,7 @@ class Factions(commands.Cog):
                     except Exception:
                         pass
 
-    # -------------------------------------------------------------------
-    # Status change detection & notification (used by manual commands)
-    # -------------------------------------------------------------------
     async def _check_status_change(self, guild_id: int, channel_id: int, faction_name: str):
-        """Check and announce a single faction's status change (for manual updates)."""
         try:
             points_data = await self._get_channel_points(guild_id, channel_id)
         except Exception:
@@ -244,7 +233,6 @@ class Factions(commands.Cog):
         faction_points = next((f['points'] for f in points_data if f['name'].lower() == faction_name.lower()), 0)
         pct = (faction_points / total * 100) if total > 0 else 0
         new_status = get_status(pct)
-
         cache_key = (guild_id, channel_id, faction_name.lower())
         old_status = self._status_cache.get(cache_key)
         if old_status != new_status and new_status is not None:
@@ -268,9 +256,6 @@ class Factions(commands.Cog):
                 except Exception:
                     pass
 
-    # -------------------------------------------------------------------
-    # Database helpers
-    # -------------------------------------------------------------------
     async def _get_channel_points(self, guild_id: int, channel_id: int) -> list[dict]:
         if not supabase:
             return []
@@ -541,7 +526,6 @@ class Factions(commands.Cog):
                     'updated_at': utc_now_iso()
                 }, on_conflict='guild_id,channel_id,faction_name').execute()
             await ctx.send(f'✅ Puntos actualizados en {channel.mention}.')
-            # After all points set, announce all changes at once
             await self._announce_all_status_changes(ctx.guild.id, channel.id)
         except Exception as e:
             await ctx.send(f'❌ Error: {e}')
@@ -567,7 +551,6 @@ class Factions(commands.Cog):
                 faction_name = arg1.strip()
                 delta_str = arg2.strip() if arg2 else None
 
-        # Show all points if no faction/delta
         if not faction_name and not delta_str:
             points_data = await self._get_channel_points(ctx.guild.id, channel.id)
             if not points_data:
@@ -620,7 +603,6 @@ class Factions(commands.Cog):
                 'updated_at': utc_now_iso()
             }, on_conflict='guild_id,channel_id,faction_name').execute()
             await ctx.send(f'✅ **{real_name}**: {current} → {new_pts} pts en {channel.mention}')
-            # Single faction change – check immediately
             await self._check_status_change(ctx.guild.id, channel.id, real_name)
         except Exception as e:
             await ctx.send(f'❌ Error: {e}')

@@ -1,13 +1,10 @@
 import asyncio
-import time
 import discord
 import os
 import difflib
 import requests
 import io
 import csv
-from .items import load_items_table
-from .utils import local_md5
 
 # Sheet URLs
 UNLOCK_SHEET_URL = "https://docs.google.com/spreadsheets/d/1LWhg-GA_QuFOlic2-oD7lFX2whhq-i5QPljdwCB0fCk/export?format=csv&gid=2073923557"
@@ -22,39 +19,38 @@ PREFIX_MAP = {
 }
 
 # ---------------------------------------------------------------------------
-# Sheet caching (TTL = 5 minutes)
+# Sheet caching (no TTL – lives until manually invalidated)
 # ---------------------------------------------------------------------------
 _unlocks_cache = None
-_unlocks_cache_time = 0
 _entes_cache = None
-_entes_cache_time = 0
-_CACHE_TTL = 300
 
 async def get_cached_unlocks_async():
-    global _unlocks_cache, _unlocks_cache_time
-    now = time.time()
-    if _unlocks_cache is None or (now - _unlocks_cache_time) > _CACHE_TTL:
+    global _unlocks_cache
+    if _unlocks_cache is None:
         _unlocks_cache = await asyncio.to_thread(load_sheet, UNLOCK_SHEET_URL)
-        _unlocks_cache_time = now
     return _unlocks_cache
 
 async def get_cached_entes_async():
-    global _entes_cache, _entes_cache_time
-    now = time.time()
-    if _entes_cache is None or (now - _entes_cache_time) > _CACHE_TTL:
+    global _entes_cache
+    if _entes_cache is None:
         _entes_cache = await asyncio.to_thread(load_sheet, ENTE_SHEET_URL)
-        _entes_cache_time = now
     return _entes_cache
 
+def invalidate_all_caches():
+    """Clear all caches so they will be rebuilt on next access."""
+    global _unlocks_cache, _entes_cache, _image_index
+    _unlocks_cache = None
+    _entes_cache = None
+    _image_index = None
+
 async def preload_caches():
-    # Load sheets (these are async to avoid blocking)
+    """Eagerly load sheet caches and image index so no user waits."""
     await get_cached_unlocks_async()
     await get_cached_entes_async()
-    # Build image index in a thread (it does filesystem I/O)
     await asyncio.to_thread(build_image_index)
 
 # ---------------------------------------------------------------------------
-# Image index (built once, invalidated manually after refresh)
+# Image index (built once, invalidated manually)
 # ---------------------------------------------------------------------------
 _image_index = None
 
@@ -75,6 +71,9 @@ def find_image(base_id):
     if _image_index is None:
         build_image_index()
     return _image_index.get(base_id.upper())
+
+# Backward‑compatible alias for commands.py
+find_image_cached = find_image
 
 # ---------------------------------------------------------------------------
 # Helper functions
