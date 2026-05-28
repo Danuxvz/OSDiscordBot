@@ -63,7 +63,7 @@ def build_image_index():
                 item_id = f[:-4].upper()
                 _image_index[item_id] = os.path.join(folder, f)
 
-def find_image_cached(base_id):
+def find_image(base_id):
     global _image_index
     if _image_index is None:
         build_image_index()
@@ -144,7 +144,7 @@ class EnteView(discord.ui.View):
         embed.add_field(name="Type", value=typ)
         embed.add_field(name="Unlocked At", value=f"{self.base_id} x{mult}")
 
-        img_path = find_image_cached(self.base_id)
+        img_path = find_image(self.base_id)
         file = None
         if img_path:
             file = discord.File(img_path, filename=os.path.basename(img_path))

@@ -146,7 +146,7 @@ class Factions(commands.Cog):
             return
 
         # 1) Collect all point changes without writing yet
-        changes = defaultdict(lambda: defaultdict(int))  # guild_id -> channel_id -> faction_name -> delta
+        changes = {}  # guild_id -> channel_id -> faction_name -> delta
         for row in mods.data:
             if row['guild_id'] not in guilds_to_process:
                 continue
@@ -158,7 +158,8 @@ class Factions(commands.Cog):
             gid = row['guild_id']
             cid = row['channel_id']
             fname = row['faction_name']
-            changes[gid][cid][fname] = changes[gid][cid].get(fname, 0) + delta
+            changes.setdefault(gid, {}).setdefault(cid, {}).setdefault(fname, 0)
+            changes[gid][cid][fname] += delta
 
         if not changes:
             # No actual changes, but mark guilds as processed

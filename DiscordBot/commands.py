@@ -17,7 +17,7 @@ from .scanning import scan_guild, check_weekly_thread
 from .routes import VALID_ROUTES, match_route
 from .views import (
     EnteView, find_item, load_sheet, find_image, UNLOCK_SHEET_URL, ENTE_SHEET_URL, normalize_id,
-    get_cached_unlocks_async, get_cached_entes_async, find_image_cached
+    get_cached_unlocks_async, get_cached_entes_async
 )
 from .routes import VALID_ROUTES, load_guild_aliases, get_alias_map
 
@@ -1003,7 +1003,7 @@ class BotCommands(commands.Cog):
             embed.add_field(name="Type", value=typ)
             embed.add_field(name="Unlocked At", value=f"{base_id} x{mult}")
 
-            img_path = find_image_cached(base_id)
+            img_path = find_image(base_id)
             file = None
             if img_path:
                 file = discord.File(img_path, filename=os.path.basename(img_path))
@@ -1029,7 +1029,7 @@ class BotCommands(commands.Cog):
             color=discord.Color.blurple()
         )
         embed.add_field(name="Element", value=element)
-        img_path = find_image_cached(base_id)
+        img_path = find_image(base_id)
         file = None
         if img_path:
             file = discord.File(img_path, filename=os.path.basename(img_path))
