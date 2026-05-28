@@ -46,6 +46,13 @@ async def get_cached_entes_async():
         _entes_cache_time = now
     return _entes_cache
 
+async def preload_caches():
+    # Load sheets (these are async to avoid blocking)
+    await get_cached_unlocks_async()
+    await get_cached_entes_async()
+    # Build image index in a thread (it does filesystem I/O)
+    await asyncio.to_thread(build_image_index)
+
 # ---------------------------------------------------------------------------
 # Image index (built once, invalidated manually after refresh)
 # ---------------------------------------------------------------------------

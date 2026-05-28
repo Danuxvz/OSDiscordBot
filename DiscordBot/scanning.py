@@ -11,6 +11,7 @@ from .items import load_items_table
 from .routes import match_route
 from .parsing import parse_busqueda_message
 from .services.supabase_service import upload_characters_csv_to_supabase
+from .views import invalidate_all_caches, preload_caches
 
 scan_locks = {}
 
@@ -225,6 +226,8 @@ async def scan_guild(bot, guild_id, force=False, week_start=None):
             print(f"[SCAN] No thread for guild {guild_id}")
             return
 
+        invalidate_all_caches()
+        await preload_caches()
         items_table = load_items_table()
         ops_channel_id = cfg.get("operations_channel")
         ops_channel = bot.get_channel(ops_channel_id) if ops_channel_id else None

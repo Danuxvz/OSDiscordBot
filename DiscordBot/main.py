@@ -8,7 +8,8 @@ from DiscordBot.config import supabase, load_config_from_db, config_sync_loop, p
 from DiscordBot.commands import BotCommands
 from DiscordBot.scanning import check_weekly_thread, scan_guild
 from DiscordBot.items import refresh_items_table
-from DiscordBot.factions import Factions   # <-- NEW
+from DiscordBot.factions import Factions
+from DiscordBot.views import preload_caches
 
 load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
@@ -52,12 +53,8 @@ async def on_ready():
     await load_config_from_db()
     await pull_updates_from_db()
     # Sync slash commands
-    try:
-        synced = await bot.tree.sync()
-        print(f"Synced {len(synced)} slash commands.")
-    except Exception as e:
-        print(f"Failed to sync commands: {e}")
-
+    await preload_caches()
+    print("Caches preloaded.")
     asyncio.create_task(config_sync_loop())
     check_weekly_thread_task.start()
     scan_busquedas_thread.start()
@@ -72,7 +69,7 @@ async def on_command_error(ctx, error):
 async def main():
     async with bot:
         await bot.add_cog(BotCommands(bot))
-        await bot.add_cog(Factions(bot))   # <-- NEW
+        await bot.add_cog(Factions(bot))
         await bot.start(DISCORD_TOKEN)
 
 if __name__ == "__main__":
