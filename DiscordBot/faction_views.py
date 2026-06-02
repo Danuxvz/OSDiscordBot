@@ -131,7 +131,7 @@ class LocationModal(discord.ui.Modal, title='Información de la ubicación'):
             placeholder='Ej: Distrito Carmesí',
             default=self.current.get('name', ''),
             required=False,
-            max_length=100
+            max_length=1400
         )
         self.add_item(self.name_input)
 
