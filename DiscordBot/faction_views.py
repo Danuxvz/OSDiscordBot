@@ -53,7 +53,7 @@ class FactionCreateModal(discord.ui.Modal, title='Crear / Editar Facción'):
             placeholder='Una breve descripción de la facción...',
             default=existing_description,
             required=False,
-            max_length=500,
+            max_length=1400,
             style=discord.TextStyle.long
         )
         self.add_item(self.desc_input)
@@ -64,7 +64,7 @@ class FactionCreateModal(discord.ui.Modal, title='Crear / Editar Facción'):
             placeholder='https://...',
             default=existing_image_url,
             required=False,
-            max_length=500
+            max_length=1400
         )
         self.add_item(self.image_input)
 
@@ -131,7 +131,7 @@ class LocationModal(discord.ui.Modal, title='Información de la ubicación'):
             placeholder='Ej: Distrito Carmesí',
             default=self.current.get('name', ''),
             required=False,
-            max_length=1400
+            max_length=100
         )
         self.add_item(self.name_input)
 
@@ -149,7 +149,7 @@ class LocationModal(discord.ui.Modal, title='Información de la ubicación'):
             placeholder='Descripción del lugar...',
             default=self.current.get('description', ''),
             required=False,
-            max_length=500,
+            max_length=1400,
             style=discord.TextStyle.long
         )
         self.add_item(self.desc_input)
@@ -159,7 +159,7 @@ class LocationModal(discord.ui.Modal, title='Información de la ubicación'):
             placeholder='https://...',
             default=self.current.get('image_url', ''),
             required=False,
-            max_length=500
+            max_length=1400
         )
         self.add_item(self.image_input)
 
