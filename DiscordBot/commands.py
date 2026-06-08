@@ -448,6 +448,35 @@ class BotCommands(commands.Cog):
             f"Local: {local.strftime('%Y-%m-%d %H:%M:%S')}"
         )
 
+    @commands.command(name="mercycheck", aliases=["mcheck"])
+    @commands.has_permissions(administrator=True)
+    async def mercy_check(self, ctx, codigo: str):
+        """Muestra los streaks de piedad de un personaje (admin)."""
+        if not supabase:
+            await ctx.send("❌ Supabase not configured.")
+            return
+
+        codigo = codigo.upper().strip()
+        try:
+            res = supabase.table("character_mercy") \
+                .select("streak_d, streak_c, updated_at") \
+                .eq("guild_id", str(ctx.guild.id)) \
+                .eq("codigo", codigo) \
+                .maybe_single() \
+                .execute()
+            if res and res.data:
+                data = res.data
+                await ctx.send(
+                    f"📊 **{codigo}**\n"
+                    f"Streak sin D: **{data['streak_d']}**\n"
+                    f"Streak sin C: **{data['streak_c']}**\n"
+                    f"Última actualización: {data.get('updated_at', '?')}"
+                )
+            else:
+                await ctx.send(f"ℹ️ No hay datos para `{codigo}` (aún no ha participado en búsquedas).")
+        except Exception as e:
+            await ctx.send(f"❌ Error: {e}")
+
     @commands.command(aliases=["busquedas", "busqueda", "search", "setb", "busquedaschannel", "setsearch", "sb", "setbusquedas"])
     @commands.has_permissions(administrator=True)
     async def set_busquedas(self, ctx, *, arg=None):

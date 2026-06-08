@@ -23,14 +23,87 @@ def get_lock(guild_id):
         scan_locks[guild_id] = asyncio.Lock()
     return scan_locks[guild_id]
 
-def roll_tier():
-    r = random.randint(1, 20)
-    if 1 <= r <= 14:
-        return "E", r
-    if 15 <= r <= 19:
-        return "D", r
-    return "C", r
+# ---------------------------------------------------------------------------
+# Mercy system – 400‑point scale
+# ---------------------------------------------------------------------------
+# Base ranges (out of 400): E = 280 (70%), D = 100 (25%), C = 20 (5%)
+# D bonus = streak_d * 4
+# C bonus = streak_c * 2
+# E gets whatever is left (400 - (100+bonusD) - (20+bonusC))
+# ---------------------------------------------------------------------------
+def roll_tier_mercy(streak_d: int, streak_c: int):
+    """
+    Return (tier, roll) using the mercy‑boosted probabilities.
+    streak_d : number of consecutive busquedas without a D
+    streak_c : number of consecutive busquedas without a C
+    """
+    D_RANGE = 100 + streak_d * 4
+    C_RANGE = 20 + streak_c * 2
+    E_RANGE = 400 - D_RANGE - C_RANGE
 
+    # If bonuses grow so large that E_RANGE would be negative, clamp them
+    if E_RANGE < 0:
+        # Prorate D and C to fit in 400
+        total_bonus = D_RANGE + C_RANGE
+        scale = 400 / total_bonus
+        D_RANGE = int(D_RANGE * scale)
+        C_RANGE = 400 - D_RANGE
+        E_RANGE = 0
+
+    roll = random.randint(1, 400)
+    if roll <= E_RANGE:
+        tier = "E"
+    elif roll <= E_RANGE + D_RANGE:
+        tier = "D"
+    else:
+        tier = "C"
+    return tier, roll
+
+# ---------------------------------------------------------------------------
+# Helper: load / save mercy streak for a character
+# ---------------------------------------------------------------------------
+async def get_mercy_streaks(guild_id: str, codigo: str):
+    """Return (streak_d, streak_c) for this character. Creates record if missing."""
+    if not supabase:
+        return 0, 0
+    res = supabase.table("character_mercy") \
+        .select("streak_d, streak_c") \
+        .eq("guild_id", guild_id) \
+        .eq("codigo", codigo) \
+        .maybe_single() \
+        .execute()
+    if res and res.data:
+        return res.data["streak_d"], res.data["streak_c"]
+    # Not existing – create with zeros
+    try:
+        supabase.table("character_mercy").insert({
+            "guild_id": guild_id,
+            "codigo": codigo,
+            "streak_d": 0,
+            "streak_c": 0
+        }).execute()
+    except Exception:
+        pass
+    return 0, 0
+
+async def update_mercy_streaks(guild_id: str, codigo: str, got_d: bool, got_c: bool):
+    """Increment or reset streaks after a busqueda."""
+    if not supabase:
+        return
+    streak_d, streak_c = await get_mercy_streaks(guild_id, codigo)
+    new_d = 0 if got_d else streak_d + 1
+    new_c = 0 if got_c else streak_c + 1
+    supabase.table("character_mercy").upsert({
+        "guild_id": guild_id,
+        "codigo": codigo,
+        "streak_d": new_d,
+        "streak_c": new_c,
+        "updated_at": utc_now_iso()
+    }, on_conflict="guild_id,codigo").execute()
+
+# ---------------------------------------------------------------------------
+# Deliver item (unchanged)
+# ---------------------------------------------------------------------------
 async def wait_for_rpforge_file(bot, channel, timeout=120):
     def check(msg):
         return msg.channel == channel and msg.attachments
@@ -41,13 +114,8 @@ async def wait_for_rpforge_file(bot, channel, timeout=120):
         return None
 
 async def deliver_item(bot, ops_channel, item_id, target_code, message_id, route, timeout=120):
-    """
-    Send rp!giveitem command and wait for RPForge confirmation.
-    Uses a single continuous listener to catch both the Transaction Record and the success message.
-    """
     cmd = f"rp!giveitem {item_id}x1 {target_code}"
 
-    # Retry sending on temporary failures (503, etc.)
     max_retries = 3
     for attempt in range(max_retries):
         try:
@@ -128,7 +196,6 @@ async def deliver_item(bot, ops_channel, item_id, target_code, message_id, route
     if not success and error_msg is None:
         error_msg = "Transaction Record received but no success confirmation"
 
-    # Log to Supabase
     if supabase:
         try:
             supabase.table("item_deliveries").insert({
@@ -155,6 +222,9 @@ async def deliver_item(bot, ops_channel, item_id, target_code, message_id, route
         "raw_response": raw_response
     }
 
+# ---------------------------------------------------------------------------
+# Main scan function (with mercy)
+# ---------------------------------------------------------------------------
 async def scan_guild(bot, guild_id, force=False, week_start=None):
     cfg = get_guild_cfg(guild_id)
     scan_hour = cfg.get("scan_hour", 17)
@@ -181,7 +251,7 @@ async def scan_guild(bot, guild_id, force=False, week_start=None):
             print(f"[SCAN] cannot find channel {busq_ch_id} for guild {guild_id}")
             return
 
-        # Determine week range: if week_start provided, use it, else current week
+        # Determine week range
         if week_start:
             try:
                 start_date = datetime.strptime(week_start, "%Y-%m-%d").date()
@@ -196,7 +266,6 @@ async def scan_guild(bot, guild_id, force=False, week_start=None):
         week_start_str = start.date().isoformat()
         log_path = get_weekly_log_path(start, guild_id)
 
-        # Load weekly log (from Supabase or file)
         weekly_log = None
         if supabase:
             try:
@@ -274,11 +343,17 @@ async def scan_guild(bot, guild_id, force=False, week_start=None):
                     json.dump(weekly_log, f, indent=4, ensure_ascii=False)
                 continue
 
-            # Roll items
+            # ---- Mercy: load current streaks for this character ----
+            guild_id_str = str(guild_id)
+            streak_d, streak_c = await get_mercy_streaks(guild_id_str, codigo)
+
+            # Roll items using mercy
             results = []
             failed = False
+            got_d = False
+            got_c = False
             for route in mapped_routes:
-                tier, roll = roll_tier()
+                tier, roll = roll_tier_mercy(streak_d, streak_c)
                 tier_list = items_table.get(route, {}).get(tier, [])
                 if not tier_list:
                     try:
@@ -294,6 +369,13 @@ async def scan_guild(bot, guild_id, force=False, week_start=None):
                     "id": item.get("id"), "name": item.get("name"),
                     "image": item.get("id") + ".png"
                 })
+                if tier == "D":
+                    got_d = True
+                elif tier == "C":
+                    got_c = True
+
+            # ---- Update mercy streaks after this busqueda ----
+            await update_mercy_streaks(guild_id_str, codigo, got_d, got_c)
 
             if failed:
                 weekly_log[log_key] = {
@@ -346,7 +428,7 @@ async def scan_guild(bot, guild_id, force=False, week_start=None):
             except Exception as e:
                 print("Failed to send reply:", e)
 
-            # Deliver items with verification (skip C-tier, log as success automatically)
+            # Deliver items with verification
             delivery_results = []
             all_delivered = True
             for r in results:
@@ -367,7 +449,7 @@ async def scan_guild(bot, guild_id, force=False, week_start=None):
                     if supabase:
                         try:
                             supabase.table("item_deliveries").insert({
-                                "guild_id": str(guild_id),
+                                "guild_id": guild_id_str,
                                 "message_id": str(message.id),
                                 "target_code": codigo,
                                 "item_id": item_id,
@@ -433,7 +515,7 @@ async def scan_guild(bot, guild_id, force=False, week_start=None):
         if supabase:
             try:
                 supabase.table("weekly_logs").upsert({
-                    "guild_id": str(guild_id),
+                    "guild_id": guild_id_str,
                     "week_start": week_start_str,
                     "data": weekly_log,
                     "updated_at": utc_now_iso()
@@ -478,7 +560,6 @@ async def check_weekly_thread(bot):
                 print(f"[WEEK] cannot find channel {busq_ch_id} for guild {guild_id}")
                 continue
 
-            # Final scan of the previous week's thread before creating the new one
             if last_week is not None:
                 try:
                     old_week_date = datetime.strptime(last_week, "%Y%m%d").date()
