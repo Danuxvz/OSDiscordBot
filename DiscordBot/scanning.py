@@ -14,8 +14,6 @@ from .services.supabase_service import upload_characters_csv_to_supabase
 from .views import invalidate_all_caches, preload_caches
 
 scan_locks = {}
-
-# Permanent ID of the RPForge / MythOS bot (never changes)
 RPFORGE_BOT_ID = 1230402077747056641
 
 def get_lock(guild_id):
@@ -26,24 +24,12 @@ def get_lock(guild_id):
 # ---------------------------------------------------------------------------
 # Mercy system – 400‑point scale
 # ---------------------------------------------------------------------------
-# Base ranges (out of 400): E = 280 (70%), D = 100 (25%), C = 20 (5%)
-# D bonus = streak_d * 4
-# C bonus = streak_c * 2
-# E gets whatever is left (400 - (100+bonusD) - (20+bonusC))
-# ---------------------------------------------------------------------------
 def roll_tier_mercy(streak_d: int, streak_c: int):
-    """
-    Return (tier, roll) using the mercy‑boosted probabilities.
-    streak_d : number of consecutive busquedas without a D
-    streak_c : number of consecutive busquedas without a C
-    """
     D_RANGE = 100 + streak_d * 4
     C_RANGE = 20 + streak_c * 2
     E_RANGE = 400 - D_RANGE - C_RANGE
 
-    # If bonuses grow so large that E_RANGE would be negative, clamp them
     if E_RANGE < 0:
-        # Prorate D and C to fit in 400
         total_bonus = D_RANGE + C_RANGE
         scale = 400 / total_bonus
         D_RANGE = int(D_RANGE * scale)
@@ -52,18 +38,17 @@ def roll_tier_mercy(streak_d: int, streak_c: int):
 
     roll = random.randint(1, 400)
     if roll <= E_RANGE:
-        tier = "E"
+        return "E", roll
     elif roll <= E_RANGE + D_RANGE:
-        tier = "D"
+        return "D", roll
     else:
-        tier = "C"
-    return tier, roll
+        return "C", roll
 
 # ---------------------------------------------------------------------------
-# Helper: load / save mercy streak for a character
+# Helper: load / save mercy streak (optimised)
 # ---------------------------------------------------------------------------
 async def get_mercy_streaks(guild_id: str, codigo: str):
-    """Return (streak_d, streak_c) for this character. Creates record if missing."""
+    """Return (streak_d, streak_c). Creates record if missing."""
     if not supabase:
         return 0, 0
     res = supabase.table("character_mercy") \
@@ -72,7 +57,7 @@ async def get_mercy_streaks(guild_id: str, codigo: str):
         .eq("codigo", codigo) \
         .maybe_single() \
         .execute()
-    if res and res.data:
+    if res is not None and res.data:
         return res.data["streak_d"], res.data["streak_c"]
     # Not existing – create with zeros
     try:
@@ -86,13 +71,14 @@ async def get_mercy_streaks(guild_id: str, codigo: str):
         pass
     return 0, 0
 
-async def update_mercy_streaks(guild_id: str, codigo: str, got_d: bool, got_c: bool):
-    """Increment or reset streaks after a busqueda."""
+async def update_mercy_streaks(guild_id: str, codigo: str,
+                               got_d: bool, got_c: bool,
+                               current_d: int, current_c: int):
+    """Increment or reset streaks (receives current values to avoid extra read)."""
     if not supabase:
         return
-    streak_d, streak_c = await get_mercy_streaks(guild_id, codigo)
-    new_d = 0 if got_d else streak_d + 1
-    new_c = 0 if got_c else streak_c + 1
+    new_d = 0 if got_d else current_d + 1
+    new_c = 0 if got_c else current_c + 1
     supabase.table("character_mercy").upsert({
         "guild_id": guild_id,
         "codigo": codigo,
@@ -115,7 +101,6 @@ async def wait_for_rpforge_file(bot, channel, timeout=120):
 
 async def deliver_item(bot, ops_channel, item_id, target_code, message_id, route, timeout=120):
     cmd = f"rp!giveitem {item_id}x1 {target_code}"
-
     max_retries = 3
     for attempt in range(max_retries):
         try:
@@ -126,7 +111,6 @@ async def deliver_item(bot, ops_channel, item_id, target_code, message_id, route
                 print(f"[DELIVERY] Failed to send command after {max_retries} attempts: {e}")
                 return {"success": False, "error_message": str(e), "transaction_id": None}
             await asyncio.sleep(2 ** attempt)
-
     print(f"[DELIVERY] Sent: {cmd}")
 
     def is_rpforge(msg):
@@ -157,29 +141,24 @@ async def deliver_item(bot, ops_channel, item_id, target_code, message_id, route
     raw_first = None
     raw_second = None
     error_msg = None
-
     start_time = asyncio.get_event_loop().time()
     while True:
         remaining = timeout - (asyncio.get_event_loop().time() - start_time)
         if remaining <= 0:
             error_msg = "Timeout waiting for RPForge responses"
             break
-
         try:
             msg = await bot.wait_for("message", timeout=remaining, check=is_rpforge)
         except asyncio.TimeoutError:
             error_msg = "Timeout waiting for RPForge responses"
             break
-
         text = extract_text(msg)
-
         if raw_first is None and "Transaction Record" in text:
             raw_first = text
             match = re.search(r"Transaction Record\s+(\S+)", text)
             if match:
                 transaction_id = match.group(1)
                 print(f"[DELIVERY] Transaction ID: {transaction_id}")
-
         if "Successfully gave items" in text:
             raw_second = text
             success = True
@@ -192,7 +171,6 @@ async def deliver_item(bot, ops_channel, item_id, target_code, message_id, route
         raw_response += f"\n\n--- SECOND MESSAGE ---\n{raw_second}"
     if not raw_response:
         raw_response = "No RPForge messages received."
-
     if not success and error_msg is None:
         error_msg = "Transaction Record received but no success confirmation"
 
@@ -214,7 +192,6 @@ async def deliver_item(bot, ops_channel, item_id, target_code, message_id, route
             print(f"[DELIVERY] Logged to Supabase (success={success})")
         except Exception as e:
             print(f"[SUPABASE] Failed to log delivery: {e}")
-
     return {
         "success": success,
         "transaction_id": transaction_id,
@@ -223,7 +200,7 @@ async def deliver_item(bot, ops_channel, item_id, target_code, message_id, route
     }
 
 # ---------------------------------------------------------------------------
-# Main scan function (with mercy)
+# Main scan function (optimised mercy)
 # ---------------------------------------------------------------------------
 async def scan_guild(bot, guild_id, force=False, week_start=None):
     cfg = get_guild_cfg(guild_id)
@@ -251,7 +228,6 @@ async def scan_guild(bot, guild_id, force=False, week_start=None):
             print(f"[SCAN] cannot find channel {busq_ch_id} for guild {guild_id}")
             return
 
-        # Determine week range
         if week_start:
             try:
                 start_date = datetime.strptime(week_start, "%Y-%m-%d").date()
@@ -266,16 +242,18 @@ async def scan_guild(bot, guild_id, force=False, week_start=None):
         week_start_str = start.date().isoformat()
         log_path = get_weekly_log_path(start, guild_id)
 
+        # Load weekly log
         weekly_log = None
+        guild_id_str = str(guild_id)          # <-- define here to avoid NameError
         if supabase:
             try:
                 res = supabase.table("weekly_logs") \
                     .select("data") \
-                    .eq("guild_id", str(guild_id)) \
+                    .eq("guild_id", guild_id_str) \
                     .eq("week_start", week_start_str) \
                     .maybe_single() \
                     .execute()
-                if res.data and res.data.get("data"):
+                if res is not None and res.data and res.data.get("data"):
                     weekly_log = res.data["data"]
             except Exception as e:
                 print("[SUPABASE] Failed to load weekly log:", e)
@@ -343,8 +321,7 @@ async def scan_guild(bot, guild_id, force=False, week_start=None):
                     json.dump(weekly_log, f, indent=4, ensure_ascii=False)
                 continue
 
-            # ---- Mercy: load current streaks for this character ----
-            guild_id_str = str(guild_id)
+            # ---- Mercy: load current streaks once per character ----
             streak_d, streak_c = await get_mercy_streaks(guild_id_str, codigo)
 
             # Roll items using mercy
@@ -374,8 +351,9 @@ async def scan_guild(bot, guild_id, force=False, week_start=None):
                 elif tier == "C":
                     got_c = True
 
-            # ---- Update mercy streaks after this busqueda ----
-            await update_mercy_streaks(guild_id_str, codigo, got_d, got_c)
+            # ---- Update mercy streaks (no extra fetch) ----
+            await update_mercy_streaks(guild_id_str, codigo, got_d, got_c,
+                                       streak_d, streak_c)
 
             if failed:
                 weekly_log[log_key] = {
@@ -428,7 +406,7 @@ async def scan_guild(bot, guild_id, force=False, week_start=None):
             except Exception as e:
                 print("Failed to send reply:", e)
 
-            # Deliver items with verification
+            # Deliver items
             delivery_results = []
             all_delivered = True
             for r in results:
@@ -509,7 +487,7 @@ async def scan_guild(bot, guild_id, force=False, week_start=None):
             with open(log_path, "w", encoding="utf-8") as f:
                 json.dump(weekly_log, f, indent=4, ensure_ascii=False)
 
-        # Final save
+        # Final save (using guild_id_str which is now always defined)
         with open(log_path, "w", encoding="utf-8") as f:
             json.dump(weekly_log, f, indent=4, ensure_ascii=False)
         if supabase:
@@ -543,6 +521,9 @@ async def scan_guild(bot, guild_id, force=False, week_start=None):
                     print("[RPFORGE] Error during export:", e)
         print(f"[SCAN] Finished scanning guild {guild_id}")
 
+# ---------------------------------------------------------------------------
+# Weekly thread check (unchanged)
+# ---------------------------------------------------------------------------
 async def check_weekly_thread(bot):
     now = get_local_now()
     start, end = get_current_week_range()
