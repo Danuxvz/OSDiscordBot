@@ -24,7 +24,7 @@ class Tables(commands.Cog):
             return
         try:
             # Get distinct table names (global and guild-specific)
-            names = await self._get_all_table_names()   # returns all names for all guilds
+            names = await self._get_all_table_names() 
             for name in names:
                 await self._add_table_command(name)
             print(f"[TABLES] Loaded {len(names)} table commands.")
@@ -52,11 +52,11 @@ class Tables(commands.Cog):
                 await ctx.send(f"❌ The `{table_name}` table is empty.")
                 return
             chosen = random.choice(entries)
-            await ctx.send(f"🎲 **{table_name.title()} #{chosen['entry_order']}:** {chosen['description']}")
+            await ctx.send(f"_**{table_name.title()} #{chosen['entry_order']}:** {chosen['description']}_")
 
         cmd = commands.Command(table_handler, name=table_name, help=f"Roll on the {table_name} table")
         try:
-            self.bot.remove_command(table_name)   # remove any previous version
+            self.bot.remove_command(table_name)
         except Exception:
             pass
         self.bot.add_command(cmd)
@@ -125,7 +125,7 @@ class Tables(commands.Cog):
             await ctx.send("ℹ️ No tables available in this server.")
             return
         desc = "\n".join(f"• `{n}`" for n in names)
-        embed = discord.Embed(title="📋 Available Tables", description=desc, color=discord.Color.blurple())
+        embed = discord.Embed(title="Available Tables", description=desc, color=discord.Color.blurple())
         await ctx.send(embed=embed)
 
     @table_group.command(name="create")
@@ -209,7 +209,7 @@ class Tables(commands.Cog):
             await ctx.send(f"❌ Table `{name}` not found.")
             return
         desc = "\n".join(f"**#{e['entry_order']}** – {e['description']}" for e in entries)
-        embed = discord.Embed(title=f"📜 {name.title()} Table", description=desc[:4096], color=discord.Color.dark_purple())
+        embed = discord.Embed(title=f"{name.title()} Table", description=desc[:4096], color=discord.Color.dark_purple())
         await ctx.send(embed=embed)
 
     # -----------------------------------------------------------------
@@ -222,4 +222,4 @@ class Tables(commands.Cog):
             await ctx.send(f"❌ Table `{table_name}` not found.")
             return
         chosen = random.choice(entries)
-        await ctx.send(f"🎲 **{table_name.title()} #{chosen['entry_order']}:** {chosen['description']}")
+        await ctx.send(f"_**{table_name.title()} #{chosen['entry_order']}:** {chosen['description']}_")
