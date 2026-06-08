@@ -1,40 +1,19 @@
 import random
 import re
+import traceback
 import discord
 from discord.ext import commands
 from .config import supabase
-
-class TableCommand(commands.Command):
-    """Dynamic command for a table. Handles >name (roll) and >name show."""
-    def __init__(self, table_name: str, cog):
-        self.table_name = table_name
-        self.cog = cog
-        super().__init__(
-            func=self._handler,
-            name=table_name,
-            aliases=[],
-            help=f"Roll on the {table_name} table",
-            cog=cog,
-        )
-
-    async def _handler(self, ctx: commands.Context, sub: str = None):
-        if sub and sub.lower() == "show":
-            return await self.cog.table_show(ctx, name=self.table_name)
-        # Default: roll
-        entries = await self.cog._get_table_entries(self.table_name, str(ctx.guild.id))
-        if not entries:
-            await ctx.send(f"❌ The `{self.table_name}` table is empty.")
-            return
-        chosen = random.choice(entries)
-        await ctx.send(f"🎲 **{self.table_name.title()} #{chosen['entry_order']}:** {chosen['description']}")
 
 class Tables(commands.Cog):
     """Dynamic table system with direct commands per table."""
 
     def __init__(self, bot):
         self.bot = bot
-        self._table_commands = {}
 
+    # -----------------------------------------------------------------
+    # Lifecycle – load all table commands on ready
+    # -----------------------------------------------------------------
     @commands.Cog.listener()
     async def on_ready(self):
         await self._load_table_commands()
@@ -43,27 +22,44 @@ class Tables(commands.Cog):
         """Register commands for all existing tables."""
         if not supabase:
             return
-        # Get distinct table names (global only? We'll use guild-specific later but for simplicity, global for now)
-        res = supabase.table("custom_tables") \
-            .select("table_name") \
-            .is_("guild_id", "null") \
-            .execute()
-        if not res or not res.data:
-            return
-        names = set(r["table_name"] for r in res.data)
-        for name in names:
-            if name not in self._table_commands:
+        try:
+            # Get distinct table names (global and guild-specific)
+            names = await self._get_all_table_names()   # returns all names for all guilds
+            for name in names:
                 await self._add_table_command(name)
+            print(f"[TABLES] Loaded {len(names)} table commands.")
+        except Exception as e:
+            print(f"[TABLES] Error loading tables: {e}")
+            traceback.print_exc()
 
     async def _add_table_command(self, table_name: str):
-        """Add a new command for the given table."""
-        if table_name in self._table_commands:
+        """Add a dynamic command for the given table name."""
+        table_name = table_name.strip().lower()
+        if not table_name:
             return
-        # Remove any existing command with that name to avoid duplicates
-        self.bot.remove_command(table_name)
-        cmd = TableCommand(table_name, self)
+        # Avoid overwriting existing bot commands (e.g., "table" itself)
+        if self.bot.get_command(table_name):
+            return
+
+        async def table_handler(ctx: commands.Context, *, args: str = ""):
+            # args contains the rest of the message after the command
+            args = args.strip().lower()
+            if args == "show":
+                return await self.table_show(ctx, name=table_name)
+            # Default: roll
+            entries = await self._get_table_entries(table_name, str(ctx.guild.id))
+            if not entries:
+                await ctx.send(f"❌ The `{table_name}` table is empty.")
+                return
+            chosen = random.choice(entries)
+            await ctx.send(f"🎲 **{table_name.title()} #{chosen['entry_order']}:** {chosen['description']}")
+
+        cmd = commands.Command(table_handler, name=table_name, help=f"Roll on the {table_name} table")
+        try:
+            self.bot.remove_command(table_name)   # remove any previous version
+        except Exception:
+            pass
         self.bot.add_command(cmd)
-        self._table_commands[table_name] = cmd
 
     # -----------------------------------------------------------------
     # Helpers
@@ -71,6 +67,8 @@ class Tables(commands.Cog):
     async def _get_table_entries(self, table_name: str, guild_id: str = None) -> list[dict]:
         if not supabase:
             return []
+        table_name = table_name.strip().lower()
+        # Try guild-specific first
         if guild_id:
             res = supabase.table("custom_tables") \
                 .select("id, description, entry_order") \
@@ -80,6 +78,7 @@ class Tables(commands.Cog):
                 .execute()
             if res and res.data:
                 return res.data
+        # Fallback global (guild_id IS NULL)
         res = supabase.table("custom_tables") \
             .select("id, description, entry_order") \
             .eq("table_name", table_name) \
@@ -89,22 +88,26 @@ class Tables(commands.Cog):
         return res.data if res else []
 
     async def _get_all_table_names(self, guild_id: str = None) -> list[str]:
+        """Return distinct table names (global + guild-specific)."""
         names = set()
-        res = supabase.table("custom_tables") \
-            .select("table_name") \
-            .is_("guild_id", "null") \
-            .execute()
-        if res and res.data:
-            for r in res.data:
-                names.add(r["table_name"])
-        if guild_id:
+        if supabase:
+            # Global
             res = supabase.table("custom_tables") \
                 .select("table_name") \
-                .eq("guild_id", guild_id) \
+                .is_("guild_id", "null") \
                 .execute()
             if res and res.data:
                 for r in res.data:
-                    names.add(r["table_name"])
+                    names.add(r["table_name"].strip().lower())
+            # Guild-specific
+            if guild_id:
+                res = supabase.table("custom_tables") \
+                    .select("table_name") \
+                    .eq("guild_id", guild_id) \
+                    .execute()
+                if res and res.data:
+                    for r in res.data:
+                        names.add(r["table_name"].strip().lower())
         return sorted(names)
 
     @staticmethod
@@ -119,7 +122,7 @@ class Tables(commands.Cog):
         """List all available tables."""
         names = await self._get_all_table_names(str(ctx.guild.id))
         if not names:
-            await ctx.send("No tables available in this server.")
+            await ctx.send("ℹ️ No tables available in this server.")
             return
         desc = "\n".join(f"• `{n}`" for n in names)
         embed = discord.Embed(title="📋 Available Tables", description=desc, color=discord.Color.blurple())
@@ -135,7 +138,6 @@ class Tables(commands.Cog):
         if not self._validate_table_name(name):
             await ctx.send("❌ Table name can only contain letters, numbers and underscores.")
             return
-        # Check for conflicts with existing bot commands
         if self.bot.get_command(name):
             await ctx.send(f"❌ A command named `{name}` already exists.")
             return
@@ -150,9 +152,9 @@ class Tables(commands.Cog):
                 "description": "Placeholder – table created",
                 "entry_order": 0
             }).execute()
-            # Add the command immediately
+            # Register the command immediately
             await self._add_table_command(name)
-            await ctx.send(f"✅ Table `{name}` created. Use `>{name} show` or `>table add {name} <desc>`.")
+            await ctx.send(f"✅ Table `{name}` created. Use `>{name}` to roll or `>{name} show` to view.")
         except Exception as e:
             await ctx.send(f"❌ Error creating table: {e}")
 
@@ -207,11 +209,11 @@ class Tables(commands.Cog):
             await ctx.send(f"❌ Table `{name}` not found.")
             return
         desc = "\n".join(f"**#{e['entry_order']}** – {e['description']}" for e in entries)
-        embed = discord.Embed(title=f"{name.title()} Table", description=desc[:4096], color=discord.Color.dark_purple())
+        embed = discord.Embed(title=f"📜 {name.title()} Table", description=desc[:4096], color=discord.Color.dark_purple())
         await ctx.send(embed=embed)
 
     # -----------------------------------------------------------------
-    # Alternative >roll command (still works)
+    # Alternative >roll command
     # -----------------------------------------------------------------
     @commands.command(name="roll", aliases=["r"])
     async def roll_command(self, ctx: commands.Context, *, table_name: str):
@@ -220,4 +222,4 @@ class Tables(commands.Cog):
             await ctx.send(f"❌ Table `{table_name}` not found.")
             return
         chosen = random.choice(entries)
-        await ctx.send(f"🎲 *{table_name.title()} #{chosen['entry_order']}:* {chosen['description']}*")
+        await ctx.send(f"🎲 **{table_name.title()} #{chosen['entry_order']}:** {chosen['description']}")
