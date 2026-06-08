@@ -12,6 +12,7 @@ from .faction_views import (
     FactionCreateModal, LocationModal, ModifiersModal,
     CreateFactionButton, EditFactionButton, LocationButton, ModifiersButton
 )
+from .views import FactionView, get_cached_faction_async
 
 # ---------------------------------------------------------------------------
 # Permission check
@@ -694,7 +695,34 @@ class Factions(commands.Cog):
             embed.add_field(name='📍 Territorios', value='\n'.join(lines[:20]), inline=False)
         else:
             embed.add_field(name='📍 Territorios', value='Sin influencia en ningún canal.', inline=False)
-        await ctx.send(embed=embed)
+
+        # ----- Look for faction items (Hexen, etc.) -----
+        view = None
+        try:
+            faction_sheet = await get_cached_faction_async()
+            if faction_sheet:
+                base_id = info['name'].strip().upper()
+                faction_entries = []
+                for k, v in faction_sheet.items():
+                    if k.startswith(base_id + ':'):
+                        suffix = k.split(':', 1)[1]
+                        faction_entries.append({
+                            'suffix': suffix,
+                            'title': v.get('title') or v.get('name') or 'Unknown',
+                            'type': v.get('type', 'Unknown'),
+                            'description': v.get('description', ''),
+                            'released': v.get('released', 'true')
+                        })
+                if faction_entries:
+                    faction_entries.sort(key=lambda e: e['suffix'])
+                    view = FactionView(base_id, faction_entries)
+        except Exception as e:
+            print(f"[FACTIONS] Error fetching faction sheet: {e}")
+
+        if view:
+            await ctx.send(embed=embed, view=view)
+        else:
+            await ctx.send(embed=embed)
 
     # -------------------------------------------------------------------
     # Lifecycle
