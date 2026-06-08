@@ -9,7 +9,7 @@ from DiscordBot.commands import BotCommands
 from DiscordBot.scanning import check_weekly_thread, scan_guild
 from DiscordBot.items import refresh_items_table
 from DiscordBot.factions import Factions
-from DiscordBot.rituals import Rituals  
+from DiscordBot.tables import Tables  
 from DiscordBot.views import preload_caches
 
 load_dotenv()
@@ -77,7 +77,7 @@ async def main():
     async with bot:
         await bot.add_cog(BotCommands(bot))
         await bot.add_cog(Factions(bot))
-        await bot.add_cog(Rituals(bot))
+        await bot.add_cog(Tables(bot))
         await bot.start(DISCORD_TOKEN)
 
 if __name__ == "__main__":
