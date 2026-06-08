@@ -16,13 +16,87 @@ from .views import invalidate_all_caches, preload_caches
 scan_locks = {}
 RPFORGE_BOT_ID = 1230402077747056641
 
+# ---------------------------------------------------------------------------
+# Scan lock helper
+# ---------------------------------------------------------------------------
 def get_lock(guild_id):
     if guild_id not in scan_locks:
         scan_locks[guild_id] = asyncio.Lock()
     return scan_locks[guild_id]
 
 # ---------------------------------------------------------------------------
-# Mercy system – 400‑point scale
+# Mercy system – in‑memory cache for speed
+# ---------------------------------------------------------------------------
+_mercy_cache = {}       # (guild_id, codigo) -> {"streak_d": int, "streak_c": int}
+_mercy_dirty = set()   # keys that need to be synced to Supabase
+
+async def load_all_mercy_for_guild(guild_id: str):
+    """Fetch all mercy streaks for a guild into the local cache."""
+    global _mercy_cache
+    if not supabase:
+        return
+    _mercy_cache.clear()          # we only cache one guild at a time
+    try:
+        res = supabase.table("character_mercy") \
+            .select("codigo, streak_d, streak_c") \
+            .eq("guild_id", guild_id) \
+            .execute()
+        if res and res.data:
+            for row in res.data:
+                key = (guild_id, row["codigo"])
+                _mercy_cache[key] = {
+                    "streak_d": row["streak_d"],
+                    "streak_c": row["streak_c"]
+                }
+    except Exception as e:
+        print(f"[MERCY] Failed to load mercy for guild {guild_id}: {e}")
+
+def get_mercy_streaks_cached(guild_id: str, codigo: str):
+    """Return (streak_d, streak_c) from cache; insert default if missing."""
+    key = (guild_id, codigo)
+    if key in _mercy_cache:
+        entry = _mercy_cache[key]
+        return entry["streak_d"], entry["streak_c"]
+    else:
+        _mercy_cache[key] = {"streak_d": 0, "streak_c": 0}
+        _mercy_dirty.add(key)
+        return 0, 0
+
+def update_mercy_streaks_cached(guild_id: str, codigo: str,
+                                got_d: bool, got_c: bool,
+                                current_d: int, current_c: int):
+    key = (guild_id, codigo)
+    new_d = 0 if got_d else current_d + 1
+    new_c = 0 if got_c else current_c + 1
+    _mercy_cache[key] = {"streak_d": new_d, "streak_c": new_c}
+    _mercy_dirty.add(key)
+
+async def save_dirty_mercy():
+    """Bulk‑upsert all dirty mercy entries to Supabase."""
+    global _mercy_dirty
+    if not supabase or not _mercy_dirty:
+        return
+    rows = []
+    for (gid, codigo) in _mercy_dirty:
+        entry = _mercy_cache.get((gid, codigo))
+        if entry:
+            rows.append({
+                "guild_id": gid,
+                "codigo": codigo,
+                "streak_d": entry["streak_d"],
+                "streak_c": entry["streak_c"],
+                "updated_at": utc_now_iso()
+            })
+    if rows:
+        try:
+            supabase.table("character_mercy").upsert(rows, on_conflict="guild_id,codigo").execute()
+            print(f"[MERCY] Synced {len(rows)} streaks.")
+        except Exception as e:
+            print(f"[MERCY] Failed to sync streaks: {e}")
+    _mercy_dirty.clear()
+
+# ---------------------------------------------------------------------------
+# Mercy rolling function
 # ---------------------------------------------------------------------------
 def roll_tier_mercy(streak_d: int, streak_c: int):
     D_RANGE = 100 + streak_d * 4
@@ -45,10 +119,10 @@ def roll_tier_mercy(streak_d: int, streak_c: int):
         return "C", roll
 
 # ---------------------------------------------------------------------------
-# Helper: load / save mercy streak (optimised)
+# Original DB helpers (kept for the >mercycheck admin command)
 # ---------------------------------------------------------------------------
 async def get_mercy_streaks(guild_id: str, codigo: str):
-    """Return (streak_d, streak_c). Creates record if missing."""
+    """Direct DB lookup (used by >mercycheck)."""
     if not supabase:
         return 0, 0
     res = supabase.table("character_mercy") \
@@ -59,33 +133,7 @@ async def get_mercy_streaks(guild_id: str, codigo: str):
         .execute()
     if res is not None and res.data:
         return res.data["streak_d"], res.data["streak_c"]
-    # Not existing – create with zeros
-    try:
-        supabase.table("character_mercy").insert({
-            "guild_id": guild_id,
-            "codigo": codigo,
-            "streak_d": 0,
-            "streak_c": 0
-        }).execute()
-    except Exception:
-        pass
     return 0, 0
-
-async def update_mercy_streaks(guild_id: str, codigo: str,
-                               got_d: bool, got_c: bool,
-                               current_d: int, current_c: int):
-    """Increment or reset streaks (receives current values to avoid extra read)."""
-    if not supabase:
-        return
-    new_d = 0 if got_d else current_d + 1
-    new_c = 0 if got_c else current_c + 1
-    supabase.table("character_mercy").upsert({
-        "guild_id": guild_id,
-        "codigo": codigo,
-        "streak_d": new_d,
-        "streak_c": new_c,
-        "updated_at": utc_now_iso()
-    }, on_conflict="guild_id,codigo").execute()
 
 # ---------------------------------------------------------------------------
 # Deliver item (unchanged)
@@ -200,7 +248,7 @@ async def deliver_item(bot, ops_channel, item_id, target_code, message_id, route
     }
 
 # ---------------------------------------------------------------------------
-# Main scan function (optimised mercy)
+# Main scan function (fast, with local mercy cache)
 # ---------------------------------------------------------------------------
 async def scan_guild(bot, guild_id, force=False, week_start=None):
     cfg = get_guild_cfg(guild_id)
@@ -242,9 +290,10 @@ async def scan_guild(bot, guild_id, force=False, week_start=None):
         week_start_str = start.date().isoformat()
         log_path = get_weekly_log_path(start, guild_id)
 
+        guild_id_str = str(guild_id)
+
         # Load weekly log
         weekly_log = None
-        guild_id_str = str(guild_id)          # <-- define here to avoid NameError
         if supabase:
             try:
                 res = supabase.table("weekly_logs") \
@@ -278,6 +327,9 @@ async def scan_guild(bot, guild_id, force=False, week_start=None):
         items_table = load_items_table()
         ops_channel_id = cfg.get("operations_channel")
         ops_channel = bot.get_channel(ops_channel_id) if ops_channel_id else None
+
+        # ===== Load all mercy streaks for this guild into local cache =====
+        await load_all_mercy_for_guild(guild_id_str)
 
         async for message in thread.history(limit=1000, oldest_first=True):
             if message.author.bot:
@@ -321,8 +373,8 @@ async def scan_guild(bot, guild_id, force=False, week_start=None):
                     json.dump(weekly_log, f, indent=4, ensure_ascii=False)
                 continue
 
-            # ---- Mercy: load current streaks once per character ----
-            streak_d, streak_c = await get_mercy_streaks(guild_id_str, codigo)
+            # ---- Mercy: read from local cache (instant) ----
+            streak_d, streak_c = get_mercy_streaks_cached(guild_id_str, codigo)
 
             # Roll items using mercy
             results = []
@@ -351,9 +403,8 @@ async def scan_guild(bot, guild_id, force=False, week_start=None):
                 elif tier == "C":
                     got_c = True
 
-            # ---- Update mercy streaks (no extra fetch) ----
-            await update_mercy_streaks(guild_id_str, codigo, got_d, got_c,
-                                       streak_d, streak_c)
+            # ---- Update cache (no DB call) ----
+            update_mercy_streaks_cached(guild_id_str, codigo, got_d, got_c, streak_d, streak_c)
 
             if failed:
                 weekly_log[log_key] = {
@@ -487,7 +538,10 @@ async def scan_guild(bot, guild_id, force=False, week_start=None):
             with open(log_path, "w", encoding="utf-8") as f:
                 json.dump(weekly_log, f, indent=4, ensure_ascii=False)
 
-        # Final save (using guild_id_str which is now always defined)
+        # ===== Sync dirty mercy streaks back to Supabase =====
+        await save_dirty_mercy()
+
+        # Final save of weekly log
         with open(log_path, "w", encoding="utf-8") as f:
             json.dump(weekly_log, f, indent=4, ensure_ascii=False)
         if supabase:
