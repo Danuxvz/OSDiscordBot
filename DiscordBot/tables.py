@@ -52,7 +52,7 @@ class Tables(commands.Cog):
                 await ctx.send(f"❌ The `{table_name}` table is empty.")
                 return
             chosen = random.choice(entries)
-            await ctx.send(f"_**{table_name.title()} #{chosen['entry_order']}:** {chosen['description']}_")
+            await ctx.send(f"- **{table_name.title()} #{chosen['entry_order']}:** – {chosen['description']}")
 
         cmd = commands.Command(table_handler, name=table_name, help=f"Roll on the {table_name} table")
         try:
@@ -208,7 +208,7 @@ class Tables(commands.Cog):
         if not entries:
             await ctx.send(f"❌ Table `{name}` not found.")
             return
-        desc = "\n".join(f"**#{e['entry_order']}** – {e['description']}" for e in entries)
+        desc = "\n".join(f"**.{e['entry_order']}** – {e['description']}" for e in entries)
         embed = discord.Embed(title=f"{name.title()} Table", description=desc[:4096], color=discord.Color.dark_purple())
         await ctx.send(embed=embed)
 
@@ -222,4 +222,4 @@ class Tables(commands.Cog):
             await ctx.send(f"❌ Table `{table_name}` not found.")
             return
         chosen = random.choice(entries)
-        await ctx.send(f"_**{table_name.title()} #{chosen['entry_order']}:** {chosen['description']}_")
+        await ctx.send(f"- **{table_name.title()} #{chosen['entry_order']}** – {chosen['description']}")
