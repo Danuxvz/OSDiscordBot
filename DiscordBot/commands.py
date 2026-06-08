@@ -16,7 +16,7 @@ from .items import refresh_items_table, load_items_table
 from .scanning import scan_guild, check_weekly_thread
 from .routes import VALID_ROUTES, match_route
 from .views import (
-    EnteView, find_item, load_sheet, find_image, UNLOCK_SHEET_URL, ENTE_SHEET_URL, normalize_id,
+    EnteView, FactionView, find_item, get_cached_faction_async, load_sheet, find_image, UNLOCK_SHEET_URL, ENTE_SHEET_URL, normalize_id,
     get_cached_unlocks_async, get_cached_entes_async
 )
 from .routes import VALID_ROUTES, load_guild_aliases, get_alias_map
@@ -955,27 +955,21 @@ class BotCommands(commands.Cog):
             suffix = "AE"
             unlock_query = False
 
-        # Load sheets using caches
+        # Load sheets
         try:
             unlocks = await get_cached_unlocks_async()
             entes = await get_cached_entes_async()
+            faction_data = await get_cached_faction_async()
         except Exception as e:
             await ctx.send(f"❌ Error loading sheet: `{e}`")
             return
 
-        if unlock_query:
-            full_id = f"{base_id}:{suffix}"
-            row = unlocks.get(full_id)
-            if not row:
-                await ctx.send("❌ Item not found in unlocks.")
-                return
-
+        # Helper to build faction embed
+        def build_faction_embed(row, full_id):
             title = row.get("title") or row.get("name") or "Unknown"
             desc = row.get("description", "")
             typ = row.get("type", "Unknown")
             released = row.get("released", "true").lower() in ("true", "1", "yes")
-            mult = {"AE": 2, "SB": 3, "HE": 4, "AC": 5}.get(suffix, 2)
-
             if not released:
                 embed = discord.Embed(
                     title="Item Pending",
@@ -983,63 +977,127 @@ class BotCommands(commands.Cog):
                     color=discord.Color.orange()
                 )
             else:
-                PREFIX_MAP = {
-                    "AE": "ae",
-                    "SB": "stat",
-                    "HE": "he",
-                    "AC": "armor"
-                }
-                emoji_name = PREFIX_MAP.get(suffix, suffix.lower())
-                prefix = discord.utils.get(ctx.guild.emojis, name=emoji_name)
-                prefix_str = str(prefix) if prefix else f"{suffix}:"
-
-                embed = discord.Embed(
-                    title=f"{prefix_str} {title}",
-                    description=desc,
-                    color=discord.Color.green()
-                )
-
+                embed = discord.Embed(title=title, description=desc, color=discord.Color.blurple())
             embed.add_field(name="ID", value=full_id)
             embed.add_field(name="Type", value=typ)
-            embed.add_field(name="Unlocked At", value=f"{base_id} x{mult}")
+            img_path = find_image(base_id)
+            if img_path:
+                file = discord.File(img_path, filename=os.path.basename(img_path))
+                embed.set_image(url=f"attachment://{os.path.basename(img_path)}")
+                return embed, file
+            return embed, None
 
+        if unlock_query:
+            full_id = f"{base_id}:{suffix}"
+            # 1) Unlock sheet
+            row = unlocks.get(full_id)
+            if row:
+                # (existing unlock embed code – keep it unchanged from your current version)
+                title = row.get("title") or row.get("name") or "Unknown"
+                desc = row.get("description", "")
+                typ = row.get("type", "Unknown")
+                released = row.get("released", "true").lower() in ("true", "1", "yes")
+                mult = {"AE": 2, "SB": 3, "HE": 4, "AC": 5}.get(suffix, 2)
+                if not released:
+                    embed = discord.Embed(
+                        title="Item Pending",
+                        description=f"{full_id}\nAún no ha sido liberado.",
+                        color=discord.Color.orange()
+                    )
+                else:
+                    PREFIX_MAP = {
+                        "AE": "ae",
+                        "SB": "stat",
+                        "HE": "he",
+                        "AC": "armor"
+                    }
+                    emoji_name = PREFIX_MAP.get(suffix, suffix.lower())
+                    prefix = discord.utils.get(ctx.guild.emojis, name=emoji_name)
+                    prefix_str = str(prefix) if prefix else f"{suffix}:"
+                    embed = discord.Embed(
+                        title=f"{prefix_str} {title}",
+                        description=desc,
+                        color=discord.Color.green()
+                    )
+                embed.add_field(name="ID", value=full_id)
+                embed.add_field(name="Type", value=typ)
+                embed.add_field(name="Unlocked At", value=f"{base_id} x{mult}")
+                img_path = find_image(base_id)
+                file = None
+                if img_path:
+                    file = discord.File(img_path, filename=os.path.basename(img_path))
+                    embed.set_image(url=f"attachment://{os.path.basename(img_path)}")
+                if file:
+                    await ctx.send(embed=embed, file=file)
+                else:
+                    await ctx.send(embed=embed)
+                return
+
+            # 2) Faction sheet
+            if faction_data:
+                faction_row = faction_data.get(full_id)
+                if faction_row:
+                    embed, file = build_faction_embed(faction_row, full_id)
+                    if file:
+                        await ctx.send(embed=embed, file=file)
+                    else:
+                        await ctx.send(embed=embed)
+                    return
+
+            await ctx.send("❌ Item not found in unlocks.")
+            return
+
+        # ============ No suffix -> show base item ============
+        # 1) Ente sheet
+        _, row = find_item(entes, base_id)
+        if row:
+            name = row.get("name") or "Unknown"
+            element = row.get("elemento") or row.get("element") or "Unknown"
+            embed = discord.Embed(title=base_id, description=name, color=discord.Color.blurple())
+            embed.add_field(name="Element", value=element)
             img_path = find_image(base_id)
             file = None
             if img_path:
                 file = discord.File(img_path, filename=os.path.basename(img_path))
-                url = f"attachment://{os.path.basename(img_path)}"
-                embed.set_image(url=url)
-
+                embed.set_image(url=f"attachment://{os.path.basename(img_path)}")
+            view = EnteView(base_id)
             if file:
-                await ctx.send(embed=embed, file=file)
+                await ctx.send(embed=embed, file=file, view=view)
             else:
-                await ctx.send(embed=embed)
+                await ctx.send(embed=embed, view=view)
             return
 
-        # Base ente
-        _, row = find_item(entes, base_id)
-        if not row:
-            await ctx.send("❌ Item not found.")
-            return
-        name = row.get("name") or "Unknown"
-        element = row.get("elemento") or row.get("element") or "Unknown"
-        embed = discord.Embed(
-            title=base_id,
-            description=name,
-            color=discord.Color.blurple()
-        )
-        embed.add_field(name="Element", value=element)
-        img_path = find_image(base_id)
-        file = None
-        if img_path:
-            file = discord.File(img_path, filename=os.path.basename(img_path))
-            url = f"attachment://{os.path.basename(img_path)}"
-            embed.set_image(url=url)
-        view = EnteView(base_id)
-        if file:
-            await ctx.send(embed=embed, file=file, view=view)
-        else:
-            await ctx.send(embed=embed, view=view)
+        # 2) Faction base item (e.g., Hexen)
+        if faction_data:
+            # Collect all entries for this base id
+            faction_entries = []
+            for k, v in faction_data.items():
+                if k.startswith(base_id + ":"):
+                    suffix = k.split(":", 1)[1]
+                    faction_entries.append({
+                        "suffix": suffix,
+                        "title": v.get("title") or v.get("name") or "Unknown",
+                        "type": v.get("type", "Unknown"),
+                        "description": v.get("description", ""),
+                        "released": v.get("released", "true")
+                    })
+            if faction_entries:
+                # Sort by suffix A, B, C, D, E
+                faction_entries.sort(key=lambda e: e["suffix"])
+                embed = discord.Embed(title=base_id, description="Hexen faction item", color=discord.Color.blurple())
+                img_path = find_image(base_id)
+                file = None
+                if img_path:
+                    file = discord.File(img_path, filename=os.path.basename(img_path))
+                    embed.set_image(url=f"attachment://{os.path.basename(img_path)}")
+                view = FactionView(base_id, faction_entries)
+                if file:
+                    await ctx.send(embed=embed, file=file, view=view)
+                else:
+                    await ctx.send(embed=embed, view=view)
+                return
+
+        await ctx.send("❌ Item not found.")
 
     # -----------------------------------------------------------------
     # Loadout command
