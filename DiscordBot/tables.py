@@ -208,7 +208,7 @@ class Tables(commands.Cog):
         if not entries:
             await ctx.send(f"❌ Table `{name}` not found.")
             return
-        desc = "\n".join(f"**.{e['entry_order']}** – {e['description']}" for e in entries)
+        desc = "\n".join(f"**#{e['entry_order']}** – {e['description']}" for e in entries)
         embed = discord.Embed(title=f"{name.title()} Table", description=desc[:4096], color=discord.Color.dark_purple())
         await ctx.send(embed=embed)
 
