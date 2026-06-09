@@ -24,22 +24,27 @@ def parse_csv_to_items_table(csv_text):
         ID = (row.get("id") or "").strip()
         tier = (row.get("tier") or "").strip().upper() or "E"
         name = (row.get("name") or "").strip()
-        rutas = (row.get("rutas") or "").strip()
+        rutas_raw = (row.get("rutas") or "").strip()
         clase = (row.get("clase") or "").strip()
         elemento = (row.get("elemento") or "").strip()
-        if not rutas:
+        if not rutas_raw:
             continue
-        route_key = rutas
-        tier_key = tier
-        entry = {
-            "id": ID,
-            "tier": tier_key,
-            "name": name,
-            "ruta": route_key,
-            "clase": clase,
-            "elemento": elemento,
-        }
-        table.setdefault(route_key, {}).setdefault(tier_key, []).append(entry)
+
+        # Split by comma → multiple routes for the same ente
+        for route in rutas_raw.split(","):
+            route_key = route.strip()
+            if not route_key:
+                continue
+            tier_key = tier
+            entry = {
+                "id": ID,
+                "tier": tier_key,
+                "name": name,
+                "ruta": route_key,
+                "clase": clase,
+                "elemento": elemento,
+            }
+            table.setdefault(route_key, {}).setdefault(tier_key, []).append(entry)
     return table
 
 def save_items_table(table):
@@ -69,7 +74,6 @@ async def refresh_items_table():
         await asyncio.to_thread(refresh_images_from_drive)
         print("✅ Images table refreshed")
 
-        # Invalidate all caches and rebuild the image index
         invalidate_all_caches()
         await asyncio.to_thread(build_image_index)
 

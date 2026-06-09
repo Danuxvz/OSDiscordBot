@@ -2,9 +2,17 @@ import difflib
 from .config import supabase
 
 VALID_ROUTES = [
-    "Rio Barakawa", "Academia Mofunoakabe", "El Cluster", "Templo Fudakudai", "Bosque de Onigashima", "Crimson Light District",
-    "Academia Saint George", "The Fae Parliament", "Everything Hill", "St. Peter Cathedral", "Thames River", "The Botanical Forest",
-    "Academia St Peter", "Gehenna Door", "Abandoned Colosseum", "Elysian Garden", "Central Church", "Hopeless River", "Toy Factory"
+    "Rio Barakawa", "Academia Mofunoakabe", "El Cluster", "Templo Fudakudai",
+    "Bosque de Onigashima", "Crimson Light District",
+    "Academia Saint George", "The Fae Parliament", "Everything Hill",
+    "St. Peter Cathedral", "Thames River", "The Botanical Forest",
+    "Academia St Peter", "Gehenna Door", "Abandoned Colosseum",
+    "Elysian Garden", "Central Church", "Hopeless River", "Toy Factory",
+    # New routes:
+    "Salem's Research Court",
+    "Pale Gardens",
+    "Devil's Playground",
+    "Abandoned Randen Station"
 ]
 
 BUILTIN_ALIASES = {
@@ -126,12 +134,31 @@ BUILTIN_ALIASES = {
         "la fábrica de juguetes",
         "jugeteria",
         "Santa's little secret stash of the good stuff",
+    ],
+    # New routes (aliases optional)
+    "Salem's Research Court": [
+        "salem",
+        "salem research",
+        "salem's research"
+    ],
+    "Pale Gardens": [
+        "pale garden",
+        "pale"
+    ],
+    "Devil's Playground": [
+        "devil playground",
+        "devil's playground",
+        "devils playground"
+    ],
+    "Abandoned Randen Station": [
+        "randen station",
+        "abandoned randen",
+        "randen"
     ]
 }
 
-
+# The rest of the file (load_guild_aliases, get_alias_map, match_route) remains exactly as before.
 async def load_guild_aliases(guild_id: str):
-    """Fetch custom aliases for a guild from Supabase."""
     if not supabase:
         return {}
     try:
@@ -145,12 +172,10 @@ async def load_guild_aliases(guild_id: str):
         return {}
 
 def get_alias_map(guild_aliases: dict):
-    """Merge built‑in aliases and guild‑specific ones."""
     alias_map = {}
     for canonical, alias_list in BUILTIN_ALIASES.items():
         for a in alias_list:
             alias_map[a.lower()] = canonical
-    # guild aliases override built‑ins if there's a conflict
     alias_map.update(guild_aliases)
     return alias_map
 
@@ -162,30 +187,24 @@ async def match_route(user_route, items_table, guild_id=None, cutoff=0.7):
     guild_aliases = await load_guild_aliases(str(guild_id)) if guild_id else {}
     alias_map = get_alias_map(guild_aliases)
 
-    # Exact alias match
     if normalized in alias_map:
         return alias_map[normalized]
 
-    # Fuzzy match on alias keys
     alias_candidates = list(alias_map.keys())
     matches = difflib.get_close_matches(normalized, alias_candidates, n=1, cutoff=cutoff)
     if matches:
         return alias_map[matches[0]]
 
-    # Exact route name match
     if user_route in VALID_ROUTES:
         return user_route
 
-    # Fuzzy match on VALID_ROUTES
     matches = difflib.get_close_matches(user_route, VALID_ROUTES, n=1, cutoff=cutoff)
     if matches:
         return matches[0]
 
-    # Exact key in items_table
     if user_route in items_table:
         return user_route
 
-    # Fuzzy match on items_table keys
     keys = list(items_table.keys())
     matches = difflib.get_close_matches(user_route, keys, n=1, cutoff=cutoff)
     if matches:
