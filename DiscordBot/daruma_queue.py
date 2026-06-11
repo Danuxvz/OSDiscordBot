@@ -1,12 +1,13 @@
 import asyncio
 import re
 from datetime import datetime, timezone
-from .config import supabase, get_guild_cfg, utc_now_iso, RPFORGE_BOT_ID
+from .config import supabase, get_guild_cfg, utc_now_iso 
 
 PENDING = "pending"
 PROCESSING = "processing"
 COMPLETED = "completed"
 FAILED = "failed"
+RPFORGE_BOT_ID = 1230402077747056641
 
 async def resolve_ops_channel(bot, guild_id=None):
     if guild_id:
