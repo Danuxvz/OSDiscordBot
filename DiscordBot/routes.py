@@ -135,7 +135,6 @@ BUILTIN_ALIASES = {
         "jugeteria",
         "Santa's little secret stash of the good stuff",
     ],
-    # New routes (aliases optional)
     "Salem's Research Court": [
         "salem",
         "salem research",

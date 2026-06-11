@@ -9,8 +9,13 @@ from DiscordBot.commands import BotCommands
 from DiscordBot.scanning import check_weekly_thread, scan_guild
 from DiscordBot.items import refresh_items_table
 from DiscordBot.factions import Factions
-from DiscordBot.tables import Tables  
+from DiscordBot.tables import Tables
 from DiscordBot.views import preload_caches
+
+# --------------------------------------------------------------------
+# Daruma queue worker (new)
+# --------------------------------------------------------------------
+from DiscordBot.daruma_queue import process_daruma_queue
 
 load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
@@ -56,10 +61,17 @@ async def on_ready():
     # Preload sheet and image caches now so >item is instant
     await preload_caches()
     print("Caches preloaded.")
+
     # Start background tasks
     asyncio.create_task(config_sync_loop())
     check_weekly_thread_task.start()
     scan_busquedas_thread.start()
+
+    # --- Start the Daruma queue worker (new) ---
+    if not getattr(bot, "_daruma_worker_started", False):
+        bot._daruma_worker_started = True
+        asyncio.create_task(process_daruma_queue(bot))
+    # -------------------------------------------
 
 @bot.event
 async def on_command_error(ctx, error):
