@@ -77,7 +77,7 @@ async def process_daruma_transaction(bot, tx):
     guild_id = tx.get("guild_id")
     guild, ops_channel = await resolve_ops_channel(bot, guild_id)
     if not ops_channel:
-        await supabase.table("daruma_transactions").update({
+        supabase.table("daruma_transactions").update({
             "status": FAILED,
             "error_message": "No operations channel configured",
             "updated_at": utc_now_iso(),
@@ -91,13 +91,13 @@ async def process_daruma_transaction(bot, tx):
     character_code = tx["character_code"]
 
     async def fail(msg):
-        await supabase.table("daruma_transactions").update({
+        supabase.table("daruma_transactions").update({
             "status": FAILED,
             "error_message": msg[:1000],
             "updated_at": utc_now_iso(),
         }).eq("id", tx["id"]).execute()
 
-    await supabase.table("daruma_transactions").update({
+    supabase.table("daruma_transactions").update({
         "status": PROCESSING,
         "updated_at": utc_now_iso(),
     }).eq("id", tx["id"]).eq("status", PENDING).execute()
@@ -108,7 +108,7 @@ async def process_daruma_transaction(bot, tx):
             f"rp!takeitem {source_ente}x{source_amount} {character_code}",
             "Successfully took items")
         if not res["success"]:
-            await fail(res["error_message"] or "Failed taking source ente")
+            fail(res["error_message"] or "Failed taking source ente")
             return
 
     # 2) Take target (if exists)
@@ -117,7 +117,7 @@ async def process_daruma_transaction(bot, tx):
             f"rp!takeitem {target_ente}x{target_amount} {character_code}",
             "Successfully took items")
         if not res["success"]:
-            await fail(res["error_message"] or "Failed taking target ente")
+            fail(res["error_message"] or "Failed taking target ente")
             return
 
     # 3) Give target amount back as source ente (swap)
@@ -126,7 +126,7 @@ async def process_daruma_transaction(bot, tx):
             f"rp!giveitem {source_ente}x{target_amount} {character_code}",
             "Successfully gave items")
         if not res["success"]:
-            await fail(res["error_message"] or "Failed giving source ente back")
+            fail(res["error_message"] or "Failed giving source ente back")
             return
 
     # 4) Give source amount as target ente
@@ -135,10 +135,10 @@ async def process_daruma_transaction(bot, tx):
             f"rp!giveitem {target_ente}x{source_amount} {character_code}",
             "Successfully gave items")
         if not res["success"]:
-            await fail(res["error_message"] or "Failed giving target ente back")
+            fail(res["error_message"] or "Failed giving target ente back")
             return
 
-    await supabase.table("daruma_transactions").update({
+    supabase.table("daruma_transactions").update({
         "status": COMPLETED,
         "processed_at": utc_now_iso(),
         "updated_at": utc_now_iso(),
