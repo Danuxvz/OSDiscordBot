@@ -15,7 +15,6 @@ class TableView(discord.ui.View):
         self.items_per_page = 15
 
     def get_page_data(self):
-        """Return (embed) for the current page."""
         start = self.page * self.items_per_page
         end = start + self.items_per_page
         page_entries = self.entries[start:end]
@@ -26,14 +25,14 @@ class TableView(discord.ui.View):
             description=desc,
             color=discord.Color.dark_purple()
         )
-        embed.set_footer(text=f"Page {self.page + 1}/{(len(self.entries)-1)//self.items_per_page + 1}")
+        total_pages = max(1, (len(self.entries) - 1) // self.items_per_page + 1)
+        embed.set_footer(text=f"Page {self.page + 1}/{total_pages}")
         return embed
 
     async def update_message(self, interaction):
         embed = self.get_page_data()
-        # Disable buttons if on first/last page
         self.children[0].disabled = (self.page == 0)
-        self.children[1].disabled = (self.page >= (len(self.entries)-1) // self.items_per_page)
+        self.children[1].disabled = (self.page >= (len(self.entries) - 1) // self.items_per_page)
         await interaction.response.edit_message(embed=embed, view=self)
 
     @discord.ui.button(label="◀ Previous", style=discord.ButtonStyle.primary)
@@ -69,6 +68,7 @@ class Tables(commands.Cog):
             return
         try:
             names = await self._get_all_table_names()
+            print(f"[TABLES] Found table names in DB: {names}")
             for name in names:
                 await self._add_table_command(name)
             print(f"[TABLES] Loaded {len(names)} table commands.")
@@ -84,7 +84,7 @@ class Tables(commands.Cog):
                 pass
         self._table_commands.clear()
         await self._load_table_commands()
-        print("[TABLES] Reloaded all table commands.")
+        print(f"[TABLES] Reloaded all table commands (total: {len(self._table_commands)}).")
 
     async def _add_table_command(self, table_name: str):
         table_name = table_name.strip().lower()
@@ -137,15 +137,21 @@ class Tables(commands.Cog):
         return res.data if res else []
 
     async def _get_all_table_names(self, guild_id: str = None) -> list[str]:
+        """Return distinct table names (global + guild-specific)."""
         names = set()
         if supabase:
+            # Global
             res = supabase.table("custom_tables") \
                 .select("table_name") \
                 .is_("guild_id", "null") \
                 .execute()
             if res and res.data:
                 for r in res.data:
-                    names.add(r["table_name"].strip().lower())
+                    # strip and lowercase to catch hidden spaces
+                    clean = r["table_name"].strip().lower()
+                    if clean:
+                        names.add(clean)
+            # Guild-specific
             if guild_id:
                 res = supabase.table("custom_tables") \
                     .select("table_name") \
@@ -153,7 +159,9 @@ class Tables(commands.Cog):
                     .execute()
                 if res and res.data:
                     for r in res.data:
-                        names.add(r["table_name"].strip().lower())
+                        clean = r["table_name"].strip().lower()
+                        if clean:
+                            names.add(clean)
         return sorted(names)
 
     @staticmethod
