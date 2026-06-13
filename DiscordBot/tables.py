@@ -5,26 +5,70 @@ import discord
 from discord.ext import commands
 from .config import supabase
 
+class TableView(discord.ui.View):
+    """Pagination view for table entries."""
+    def __init__(self, table_name: str, entries: list[dict], timeout=120):
+        super().__init__(timeout=timeout)
+        self.table_name = table_name
+        self.entries = entries
+        self.page = 0
+        self.items_per_page = 15
+
+    def get_page_data(self):
+        """Return (embed) for the current page."""
+        start = self.page * self.items_per_page
+        end = start + self.items_per_page
+        page_entries = self.entries[start:end]
+
+        desc = "\n".join(f"**#{e['entry_order']}** – {e['description']}" for e in page_entries)
+        embed = discord.Embed(
+            title=f"{self.table_name.title()} Table",
+            description=desc,
+            color=discord.Color.dark_purple()
+        )
+        embed.set_footer(text=f"Page {self.page + 1}/{(len(self.entries)-1)//self.items_per_page + 1}")
+        return embed
+
+    async def update_message(self, interaction):
+        embed = self.get_page_data()
+        # Disable buttons if on first/last page
+        self.children[0].disabled = (self.page == 0)
+        self.children[1].disabled = (self.page >= (len(self.entries)-1) // self.items_per_page)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="◀ Previous", style=discord.ButtonStyle.primary)
+    async def previous_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.page > 0:
+            self.page -= 1
+            await self.update_message(interaction)
+
+    @discord.ui.button(label="Next ▶", style=discord.ButtonStyle.primary)
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if (self.page + 1) * self.items_per_page < len(self.entries):
+            self.page += 1
+            await self.update_message(interaction)
+
+    async def on_timeout(self):
+        for child in self.children:
+            child.disabled = True
+
+
 class Tables(commands.Cog):
     """Dynamic table system with direct commands per table."""
 
     def __init__(self, bot):
         self.bot = bot
+        self._table_commands = {}
 
-    # -----------------------------------------------------------------
-    # Lifecycle – load all table commands on ready
-    # -----------------------------------------------------------------
     @commands.Cog.listener()
     async def on_ready(self):
         await self._load_table_commands()
 
     async def _load_table_commands(self):
-        """Register commands for all existing tables."""
         if not supabase:
             return
         try:
-            # Get distinct table names (global and guild-specific)
-            names = await self._get_all_table_names() 
+            names = await self._get_all_table_names()
             for name in names:
                 await self._add_table_command(name)
             print(f"[TABLES] Loaded {len(names)} table commands.")
@@ -32,21 +76,27 @@ class Tables(commands.Cog):
             print(f"[TABLES] Error loading tables: {e}")
             traceback.print_exc()
 
+    async def reload_tables(self):
+        for name in list(self._table_commands.keys()):
+            try:
+                self.bot.remove_command(name)
+            except Exception:
+                pass
+        self._table_commands.clear()
+        await self._load_table_commands()
+        print("[TABLES] Reloaded all table commands.")
+
     async def _add_table_command(self, table_name: str):
-        """Add a dynamic command for the given table name."""
         table_name = table_name.strip().lower()
         if not table_name:
             return
-        # Avoid overwriting existing bot commands (e.g., "table" itself)
         if self.bot.get_command(table_name):
             return
 
         async def table_handler(ctx: commands.Context, *, args: str = ""):
-            # args contains the rest of the message after the command
             args = args.strip().lower()
             if args == "show":
                 return await self.table_show(ctx, name=table_name)
-            # Default: roll
             entries = await self._get_table_entries(table_name, str(ctx.guild.id))
             if not entries:
                 await ctx.send(f"❌ The `{table_name}` table is empty.")
@@ -60,6 +110,7 @@ class Tables(commands.Cog):
         except Exception:
             pass
         self.bot.add_command(cmd)
+        self._table_commands[table_name] = cmd
 
     # -----------------------------------------------------------------
     # Helpers
@@ -68,7 +119,6 @@ class Tables(commands.Cog):
         if not supabase:
             return []
         table_name = table_name.strip().lower()
-        # Try guild-specific first
         if guild_id:
             res = supabase.table("custom_tables") \
                 .select("id, description, entry_order") \
@@ -78,7 +128,6 @@ class Tables(commands.Cog):
                 .execute()
             if res and res.data:
                 return res.data
-        # Fallback global (guild_id IS NULL)
         res = supabase.table("custom_tables") \
             .select("id, description, entry_order") \
             .eq("table_name", table_name) \
@@ -88,10 +137,8 @@ class Tables(commands.Cog):
         return res.data if res else []
 
     async def _get_all_table_names(self, guild_id: str = None) -> list[str]:
-        """Return distinct table names (global + guild-specific)."""
         names = set()
         if supabase:
-            # Global
             res = supabase.table("custom_tables") \
                 .select("table_name") \
                 .is_("guild_id", "null") \
@@ -99,7 +146,6 @@ class Tables(commands.Cog):
             if res and res.data:
                 for r in res.data:
                     names.add(r["table_name"].strip().lower())
-            # Guild-specific
             if guild_id:
                 res = supabase.table("custom_tables") \
                     .select("table_name") \
@@ -119,7 +165,6 @@ class Tables(commands.Cog):
     # -----------------------------------------------------------------
     @commands.group(name="table", aliases=["tbl"], invoke_without_command=True)
     async def table_group(self, ctx: commands.Context):
-        """List all available tables."""
         names = await self._get_all_table_names(str(ctx.guild.id))
         if not names:
             await ctx.send("ℹ️ No tables available in this server.")
@@ -152,7 +197,6 @@ class Tables(commands.Cog):
                 "description": "Placeholder – table created",
                 "entry_order": 0
             }).execute()
-            # Register the command immediately
             await self._add_table_command(name)
             await ctx.send(f"✅ Table `{name}` created. Use `>{name}` to roll or `>{name} show` to view.")
         except Exception as e:
@@ -202,19 +246,16 @@ class Tables(commands.Cog):
 
     @table_group.command(name="show", aliases=["list"])
     async def table_show(self, ctx: commands.Context, *, name: str):
-        """Display all entries of a table."""
+        """Display all entries of a table (paginated)."""
         name = name.strip().lower()
         entries = await self._get_table_entries(name, str(ctx.guild.id))
         if not entries:
             await ctx.send(f"❌ Table `{name}` not found.")
             return
-        desc = "\n".join(f"**#{e['entry_order']}** – {e['description']}" for e in entries)
-        embed = discord.Embed(title=f"{name.title()} Table", description=desc[:4096], color=discord.Color.dark_purple())
-        await ctx.send(embed=embed)
+        view = TableView(name, entries)
+        embed = view.get_page_data()
+        await ctx.send(embed=embed, view=view)
 
-    # -----------------------------------------------------------------
-    # Alternative >roll command
-    # -----------------------------------------------------------------
     @commands.command(name="roll", aliases=["r"])
     async def roll_command(self, ctx: commands.Context, *, table_name: str):
         entries = await self._get_table_entries(table_name.strip().lower(), str(ctx.guild.id))

@@ -572,6 +572,12 @@ class BotCommands(commands.Cog):
         else:
             await ctx.send("⚠️ Failed to refresh items table; check logs.")
 
+        # Also reload dynamic tables (ritual, etc.)
+        tables_cog = self.bot.get_cog("Tables")
+        if tables_cog:
+            await tables_cog.reload_tables()
+            await ctx.send("✅ Custom tables reloaded.")
+
     @commands.command(aliases=["qc", "create", "weekly", "thread", "new thread"])
     @commands.has_permissions(administrator=True)
     async def quick_create(self, ctx):
