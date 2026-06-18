@@ -147,7 +147,6 @@ class Tables(commands.Cog):
                 .execute()
             if res and res.data:
                 for r in res.data:
-                    # strip and lowercase to catch hidden spaces
                     clean = r["table_name"].strip().lower()
                     if clean:
                         names.add(clean)
@@ -252,6 +251,38 @@ class Tables(commands.Cog):
         except Exception as e:
             await ctx.send(f"❌ Error: {e}")
 
+    # -----------------------------------------------------------------
+    # NEW: >table sort <name> (admin only)
+    # -----------------------------------------------------------------
+    @table_group.command(name="sort")
+    @commands.has_permissions(administrator=True)
+    async def table_sort(self, ctx: commands.Context, name: str):
+        """Reorder a table alphabetically by description (admin only)."""
+        if not supabase:
+            await ctx.send("❌ Supabase not configured.")
+            return
+        name = name.strip().lower()
+        entries = await self._get_table_entries(name, str(ctx.guild.id))
+        if not entries:
+            await ctx.send(f"❌ Table `{name}` not found.")
+            return
+
+        # Sort by description case-insensitive
+        sorted_entries = sorted(entries, key=lambda e: e["description"].lower())
+
+        try:
+            for idx, entry in enumerate(sorted_entries, start=1):
+                supabase.table("custom_tables") \
+                    .update({"entry_order": idx}) \
+                    .eq("id", entry["id"]) \
+                    .execute()
+            await ctx.send(f"✅ Table `{name}` sorted alphabetically ({len(sorted_entries)} entries).")
+        except Exception as e:
+            await ctx.send(f"❌ Error sorting table: {e}")
+
+    # -----------------------------------------------------------------
+    # >table show <name>
+    # -----------------------------------------------------------------
     @table_group.command(name="show", aliases=["list"])
     async def table_show(self, ctx: commands.Context, *, name: str):
         """Display all entries of a table (paginated)."""
@@ -264,6 +295,9 @@ class Tables(commands.Cog):
         embed = view.get_page_data()
         await ctx.send(embed=embed, view=view)
 
+    # -----------------------------------------------------------------
+    # >roll <table_name>
+    # -----------------------------------------------------------------
     @commands.command(name="roll", aliases=["r"])
     async def roll_command(self, ctx: commands.Context, *, table_name: str):
         entries = await self._get_table_entries(table_name.strip().lower(), str(ctx.guild.id))

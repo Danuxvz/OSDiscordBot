@@ -7,12 +7,10 @@ VALID_ROUTES = [
     "Academia Saint George", "The Fae Parliament", "Everything Hill",
     "St. Peter Cathedral", "Thames River", "The Botanical Forest",
     "Academia St Peter", "Gehenna Door", "Abandoned Colosseum",
-    "Elysian Garden", "Central Church", "Hopeless River", "Toy Factory",
-    # New routes:
-    "Salem's Research Court",
-    "Pale Gardens",
-    "Devil's Playground",
-    "Abandoned Randen Station"
+    "Elysian Garden", "Central Church", "Hopeless River", 
+    "Toy Factory",
+    "Pale Gardens", "Salem's Research Court", 
+    "Devil's Playground", "Abandoned Randen Station"
 ]
 
 BUILTIN_ALIASES = {
@@ -135,19 +133,23 @@ BUILTIN_ALIASES = {
         "jugeteria",
         "Santa's little secret stash of the good stuff",
     ],
+    "Pale Gardens": [
+        "pale garden",
+        "pale",
+        "Jardin Pálido",
+        "jardínes pálidos"
+    ],
     "Salem's Research Court": [
         "salem",
         "salem research",
         "salem's research"
     ],
-    "Pale Gardens": [
-        "pale garden",
-        "pale"
-    ],
     "Devil's Playground": [
         "devil playground",
         "devil's playground",
-        "devils playground"
+        "devils playground",
+        "el patio del diablo",
+        "devil's"
     ],
     "Abandoned Randen Station": [
         "randen station",
