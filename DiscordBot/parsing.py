@@ -50,8 +50,6 @@ def parse_busqueda_message(content):
     if not codigo_line:
         return None
 
-    # New: match any letters (A-Z) followed by 1-4 digits, case-insensitive
-    # Example: A123, B045, XYZ789, H001, etc.
     m = re.search(r'([A-Za-z]{1,4})\s*-?\s*(\d{1,4})', codigo_line)
     if not m:
         return None
@@ -60,7 +58,7 @@ def parse_busqueda_message(content):
     number = m.group(2).zfill(3)
     codigo = f"{prefix}{number}"
 
-    # Fuzzy find routes
+    # Fuzzy find routes header
     rutas_labels = [
         "rutas a visitar",
         "rutas visitar",
@@ -73,17 +71,33 @@ def parse_busqueda_message(content):
         if fuzzy_find("rutas", line, rutas_labels):
             rutas_start_index = i
             break
-    if rutas_start_index is None:
-        return {"codigo": codigo, "rutas": []}
+
     rutas = []
-    for line in cleaned[rutas_start_index+1:]:
-        if fuzzy_find("codigo", line, codigo_labels):
-            break
-        line = re.sub(r'^[-•*–]+', '', line).strip()
-        if not line:
-            continue
-        for part in line.split(","):
-            p = part.strip()
-            if p:
-                rutas.append(p)
+
+    if rutas_start_index is not None:
+        # Traditional parsing: collect lines after the header
+        for line in cleaned[rutas_start_index+1:]:
+            if fuzzy_find("codigo", line, codigo_labels):
+                break
+            line = re.sub(r'^[-•*–]+', '', line).strip()
+            if not line:
+                continue
+            for part in line.split(","):
+                p = part.strip()
+                if p:
+                    rutas.append(p)
+    else:
+        # after the codigo line as routes, until another code line appears.
+        codigo_index = cleaned.index(codigo_line)
+        for line in cleaned[codigo_index+1:]:
+            if fuzzy_find("codigo", line, codigo_labels):
+                break
+            line = re.sub(r'^[-•*–]+', '', line).strip()
+            if not line:
+                continue
+            for part in line.split(","):
+                p = part.strip()
+                if p:
+                    rutas.append(p)
+
     return {"codigo": codigo, "rutas": rutas}
