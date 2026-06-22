@@ -536,6 +536,36 @@ class BotCommands(commands.Cog):
             return
         set_config(ctx.guild.id, "operations_channel", channel.id)
         await ctx.send(f"✔️ Operations channel set to {channel.mention}.")
+    
+    @commands.command(aliases=["setdaruma", "darumachannel"])
+    @commands.has_permissions(administrator=True)
+    async def set_daruma_channel(self, ctx, *, arg=None):
+        cfg = get_guild_cfg(ctx.guild.id)
+        if arg is None:
+            current_id = cfg.get("daruma_channel")
+            if current_id is None:
+                await ctx.send("ℹ️ This server **has no daruma announcements channel configured**.")
+            else:
+                ch = ctx.guild.get_channel(current_id)
+                if ch:
+                    await ctx.send(f"ℹ️ Current daruma channel is {ch.mention}.")
+                else:
+                    await ctx.send("⚠️ A daruma channel is saved but no longer exists.")
+            return
+        if arg.lower() in ("none", "off", "remove", "clear"):
+            set_config(ctx.guild.id, "daruma_channel", None)
+            await ctx.send("✔️ Daruma channel **cleared**.")
+            return
+        channel = None
+        if arg.strip("<#>").isdigit():
+            channel = ctx.guild.get_channel(int(arg.strip("<#>")))
+        else:
+            channel = discord.utils.get(ctx.guild.channels, mention=arg)
+        if not channel or not isinstance(channel, discord.TextChannel):
+            await ctx.send("❌ Invalid channel. Mention a text channel or type `none`.")
+            return
+        set_config(ctx.guild.id, "daruma_channel", channel.id)
+        await ctx.send(f"✔️ Daruma announcements channel set to {channel.mention}.")
 
     @commands.command(aliases=["scanhour", "setsh", "setscan", "sethour", "sh"])
     @commands.has_permissions(administrator=True)
@@ -804,6 +834,22 @@ class BotCommands(commands.Cog):
             inline=False
         )
         embed.add_field(
+            name="📊 Tables & Rolls",
+            value=(
+                "**table** — Lista todas las tablas disponibles.\n"
+                "**table show** `nombre` — Muestra todas las entradas de una tabla (paginado).\n"
+                "**ritual** — Tira un efecto aleatorio de la tabla de rituales.\n"
+                "**ritual show** — Muestra la tabla de rituales.\n"
+                "**roll** `nombre` — Tira en cualquier tabla.\n"
+                "*(Cada tabla creada se convierte en un comando: `>nombre` para tirar, `>nombre show` para verla.)*\n"
+                "**⚙️ table create** `nombre` — Crea una nueva tabla (admin).\n"
+                "**⚙️ table add** `nombre` `descripción` — Añade una entrada (admin).\n"
+                "**⚙️ table remove** `nombre` `#` — Elimina una entrada (admin).\n"
+                "**⚙️ table sort** `nombre` — Ordena alfabéticamente una tabla (admin)."
+            ),
+            inline=False
+        )
+        embed.add_field(
             name="Comandos de Configuración ⚙️",
             value=(
                 "**setbusquedas** `#canal` — Canal donde se crean los hilos semanales de búsquedas.\n"
@@ -811,7 +857,8 @@ class BotCommands(commands.Cog):
                 "**sethour** `hour|off` — Hora diaria de escaneo (0‑23) o 'off'.\n"
                 "**prefix** `nuevo_prefijo` — Cambia el prefijo del bot.\n"
                 "**addalias** `ruta_canonica` `alias` — Añade un alias personalizado para una ruta.\n"
-                "**removealias** `alias` — Elimina un alias personalizado."
+                "**removealias** `alias` — Elimina un alias personalizado.\n"
+                "**set_daruma_channel** `#canal` — Canal de anuncios de intercambios de Daruma."
             ),
             inline=False
         )
