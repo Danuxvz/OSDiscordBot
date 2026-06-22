@@ -140,31 +140,23 @@ def create_daruma_swap_image(source_ente: str, target_ente: str) -> discord.File
 
     # Scale to 400px height, preserving aspect ratio
     target_height = 400
-    for img in (img_left, img_right):
-        w, h = img.size
-        ratio = target_height / h
-        new_w = int(w * ratio)
-        # Resize in place
-        img.thumbnail((new_w, target_height), Image.LANCZOS)
-
-    # Re-assign after resize (thumbnail modifies in place, but we need exact size)
     img_left = img_left.resize((int(img_left.width * target_height / img_left.height), target_height), Image.LANCZOS)
     img_right = img_right.resize((int(img_right.width * target_height / img_right.height), target_height), Image.LANCZOS)
 
-    gap_width = 40       # space between the two cards
+    gap_width = 80       # wider gap for a bigger arrow
     total_width = img_left.width + gap_width + img_right.width
     canvas = Image.new("RGBA", (total_width, target_height), (255, 255, 255, 0))
     canvas.paste(img_left, (0, 0))
     canvas.paste(img_right, (img_left.width + gap_width, 0))
 
-    # Draw a horizontal arrow in the centre of the gap
+    # Draw a larger horizontal arrow centred in the gap
     draw = ImageDraw.Draw(canvas)
     arrow_cx = img_left.width + gap_width // 2
     arrow_cy = target_height // 2
 
-    # Horizontal shaft (rectangle wider than tall)
-    shaft_length = 16
-    shaft_height = 6
+    # Horizontal shaft
+    shaft_length = 30
+    shaft_height = 10
     shaft_x1 = arrow_cx - shaft_length // 2
     shaft_y1 = arrow_cy - shaft_height // 2
     shaft_x2 = shaft_x1 + shaft_length
@@ -173,9 +165,9 @@ def create_daruma_swap_image(source_ente: str, target_ente: str) -> discord.File
 
     # Arrowhead (triangle pointing right)
     arrow_head_left = shaft_x2
-    arrow_head_right = arrow_head_left + 12
-    arrow_head_top = arrow_cy - 10
-    arrow_head_bottom = arrow_cy + 10
+    arrow_head_right = arrow_head_left + 18
+    arrow_head_top = arrow_cy - 16
+    arrow_head_bottom = arrow_cy + 16
     head_points = [
         (arrow_head_left, arrow_head_top),
         (arrow_head_right, arrow_cy),
