@@ -75,6 +75,8 @@ def get_guild_cfg(guild_id):
 		data["scan_hour"] = 17
 	if "prefix" not in data:
 		data["prefix"] = ">"
+	if "daruma_channel" not in data:
+		data["daruma_channel"] = None
 	return data
 
 def set_config(guild_id, key, value):
