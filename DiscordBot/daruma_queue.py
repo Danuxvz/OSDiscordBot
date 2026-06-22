@@ -143,36 +143,32 @@ def create_daruma_swap_image(source_ente: str, target_ente: str) -> discord.File
     img_left = img_left.resize((int(img_left.width * target_height / img_left.height), target_height), Image.LANCZOS)
     img_right = img_right.resize((int(img_right.width * target_height / img_right.height), target_height), Image.LANCZOS)
 
-    gap_width = 80       # wider gap for a bigger arrow
+    gap_width = 80               # total space between the two cards
+    shaft_length = 30            # arrow shaft width
+    arrowhead_length = 18        # arrowhead width
+    # Calculate left margin so that left margin = right margin
+    shaft_left_x = (gap_width - shaft_length - arrowhead_length) // 2
+
     total_width = img_left.width + gap_width + img_right.width
     canvas = Image.new("RGBA", (total_width, target_height), (255, 255, 255, 0))
     canvas.paste(img_left, (0, 0))
     canvas.paste(img_right, (img_left.width + gap_width, 0))
 
-    # Draw a larger horizontal arrow centred in the gap
+    # Draw the arrow horizontally, exactly centred vertically
     draw = ImageDraw.Draw(canvas)
-    arrow_cx = img_left.width + gap_width // 2
     arrow_cy = target_height // 2
-
-    # Horizontal shaft
-    shaft_length = 30
-    shaft_height = 10
-    shaft_x1 = arrow_cx - shaft_length // 2
-    shaft_y1 = arrow_cy - shaft_height // 2
+    shaft_x1 = img_left.width + shaft_left_x
+    shaft_y1 = arrow_cy - 5
     shaft_x2 = shaft_x1 + shaft_length
-    shaft_y2 = shaft_y1 + shaft_height
+    shaft_y2 = shaft_y1 + 10
     draw.rectangle([shaft_x1, shaft_y1, shaft_x2, shaft_y2], fill="white", outline="black")
 
     # Arrowhead (triangle pointing right)
-    arrow_head_left = shaft_x2
-    arrow_head_right = arrow_head_left + 18
-    arrow_head_top = arrow_cy - 16
-    arrow_head_bottom = arrow_cy + 16
-    head_points = [
-        (arrow_head_left, arrow_head_top),
-        (arrow_head_right, arrow_cy),
-        (arrow_head_left, arrow_head_bottom)
-    ]
+    head_left = shaft_x2
+    head_right = head_left + arrowhead_length
+    head_top = arrow_cy - 16
+    head_bottom = arrow_cy + 16
+    head_points = [(head_left, head_top), (head_right, arrow_cy), (head_left, head_bottom)]
     draw.polygon(head_points, fill="white", outline="black")
 
     buf = io.BytesIO()
@@ -281,7 +277,6 @@ async def process_daruma_transaction(bot, tx):
                     await channel.send(embed=embed, file=file)
                 else:
                     await channel.send(embed=embed)
-
 
 async def process_daruma_queue(bot, interval=30):
     while True:
