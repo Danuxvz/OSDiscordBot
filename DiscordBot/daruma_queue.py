@@ -120,7 +120,8 @@ async def count_inventory(bot, channel, ente, character_code, timeout=30):
 
 def create_daruma_swap_image(source_ente: str, target_ente: str) -> discord.File | None:
     """
-    Create a side‑by‑side image of the two daruma entes with an arrow between them.
+    Create a side‑by‑side image of the two daruma entes with a white pixel art arrow.
+    Cards keep their original aspect ratio (260x360) and are scaled to a height of 200px.
     Returns a discord.File ready to be sent, or None if images are missing.
     """
     from .views import find_image
@@ -137,33 +138,47 @@ def create_daruma_swap_image(source_ente: str, target_ente: str) -> discord.File
     except Exception:
         return None
 
-    # Resize both to 150x150
-    size = 150
-    img_left = img_left.resize((size, size), Image.LANCZOS)
-    img_right = img_right.resize((size, size), Image.LANCZOS)
+    # Scale to 200px height, preserving aspect ratio (260x360 -> ~144x200)
+    target_height = 200
+    for img in (img_left, img_right):
+        w, h = img.size
+        ratio = target_height / h
+        new_w = int(w * ratio)
+        img = img.resize((new_w, target_height), Image.LANCZOS)
 
-    arrow_width = 50
-    total_width = size + arrow_width + size
-    max_height = size
+    # Re‑assign after resize (PIL resize returns a new image)
+    img_left = img_left.resize((int(img_left.width * target_height / img_left.height), target_height), Image.LANCZOS)
+    img_right = img_right.resize((int(img_right.width * target_height / img_right.height), target_height), Image.LANCZOS)
 
-    canvas = Image.new("RGBA", (total_width, max_height), (255, 255, 255, 0))
+    arrow_width = 30
+    total_width = img_left.width + arrow_width + img_right.width
+    canvas = Image.new("RGBA", (total_width, target_height), (255, 255, 255, 0))
     canvas.paste(img_left, (0, 0))
-    canvas.paste(img_right, (size + arrow_width, 0))
+    canvas.paste(img_right, (img_left.width + arrow_width, 0))
 
-    # Draw an arrow in the middle
+    # White pixel‑art arrow (small, centered in the arrow zone)
     draw = ImageDraw.Draw(canvas)
-    arrow_x = size + 5
-    arrow_y = max_height // 2
-    draw.line([(arrow_x, arrow_y - 5), (arrow_x + 30, arrow_y - 5),
-               (arrow_x + 30, arrow_y - 15), (arrow_x + 45, arrow_y),
-               (arrow_x + 30, arrow_y + 15), (arrow_x + 30, arrow_y + 5),
-               (arrow_x, arrow_y + 5)], fill="black", width=2)
+    cx = img_left.width + arrow_width // 2   # centre x of the arrow area
+    cy = target_height // 2
+
+    # Arrow shaft (vertical rectangle)
+    shaft_w = 4
+    shaft_h = 20
+    draw.rectangle([cx - shaft_w//2, cy - shaft_h//2,
+                    cx + shaft_w//2, cy + shaft_h//2], fill="white", outline="black")
+
+    # Arrowhead (triangle pointing right)
+    arrow_head = [
+        (cx + shaft_w//2, cy - 8),   # top tip
+        (cx + shaft_w//2 + 10, cy),   # right point
+        (cx + shaft_w//2, cy + 8)     # bottom tip
+    ]
+    draw.polygon(arrow_head, fill="white", outline="black")
 
     buf = io.BytesIO()
     canvas.save(buf, format="PNG")
     buf.seek(0)
     return discord.File(buf, filename="daruma_swap.png")
-
 
 async def process_daruma_transaction(bot, tx):
     guild_id = tx.get("guild_id")
