@@ -89,7 +89,7 @@ async def ensure_tables():
         try:
             res = client.table(table).select("id").limit(1).execute()
             if res and res.data is not None:
-                pass  # silently OK
+                pass
         except Exception as e:
             print(f"[FactionProgression] Table `{table}` check failed: {e}")
 
@@ -438,7 +438,7 @@ class FactionProgression(commands.Cog):
             await ctx.send(f"❌ Error: {e}")
 
     # =================================================================
-    # Unified faction command handler
+    # Unified faction command handler (with --force detection)
     # =================================================================
     async def _faction_command(self, ctx, faction_id: str, args: str = ""):
         try:
@@ -450,6 +450,12 @@ class FactionProgression(commands.Cog):
                 else:
                     await ctx.send(embed=embed)
                 return
+
+            # Check for --force flag
+            force = False
+            if parts[-1].lower() == "--force":
+                force = True
+                parts = parts[:-1]
 
             code = parts[0].upper().strip()
 
@@ -527,7 +533,7 @@ class FactionProgression(commands.Cog):
                 char_code, discord_id, _ = char_info
 
                 if delta > 0:
-                    await self._give_faction_tokens(ctx, faction_id, delta, char_code, discord_id)
+                    await self._give_faction_tokens(ctx, faction_id, delta, char_code, discord_id, force=force)
                 elif delta < 0:
                     await self._remove_faction_tokens(ctx, faction_id, abs(delta), char_code)
                 else:
@@ -539,9 +545,9 @@ class FactionProgression(commands.Cog):
             await ctx.send(f"❌ Error inesperado: {e}")
 
     # =================================================================
-    # Token giving – NO perks_rejected blocking
+    # Token giving – now with force option
     # =================================================================
-    async def _give_faction_tokens(self, ctx, faction_id: str, amount: int, character_code: str, discord_id: str = None):
+    async def _give_faction_tokens(self, ctx, faction_id: str, amount: int, character_code: str, discord_id: str = None, force: bool = False):
         if amount <= 0:
             await ctx.send("❌ La cantidad debe ser positiva.")
             return
@@ -555,7 +561,7 @@ class FactionProgression(commands.Cog):
         current_tokens = prog["tokens"]
         unlocked = prog.get("perks_unlocked", []) or []
 
-        # Clean up stale pending rank‑ups for this character/faction
+        # Clean up stale pending rank‑ups
         client = get_supabase()
         client.table("pending_rankups") \
             .delete() \
@@ -570,19 +576,27 @@ class FactionProgression(commands.Cog):
             if amount <= 0:
                 return
 
-        immediate = amount
-        held = 0
-        target_perk = None
+        if force:
+            # Give all tokens now, then auto‑accept all eligible ranks
+            immediate = amount
+            held = 0
+        else:
+            # Normal mode: stop n-1 before next rank
+            immediate = amount
+            held = 0
+            target_perk = None
 
-        for i, t in enumerate(THRESHOLDS):
-            perk = PERKS[i]
-            if current_tokens < t and perk not in unlocked:
-                max_safe = t - 1 - current_tokens
-                if amount > max_safe:
-                    immediate = max(0, max_safe)
-                    held = amount - immediate
-                    target_perk = perk
-                break
+            for i, t in enumerate(THRESHOLDS):
+                perk = PERKS[i]
+                if current_tokens < t and perk not in unlocked:
+                    max_safe = t - 1 - current_tokens
+                    if amount > max_safe:
+                        immediate = max(0, max_safe)
+                        held = amount - immediate
+                        target_perk = perk
+                    break
+
+            # In normal mode we handle target_perk and held later
 
         if immediate > 0:
             try:
@@ -599,20 +613,53 @@ class FactionProgression(commands.Cog):
 
         await ctx.send(f"✅ {character_code} ahora tiene {new_tokens} tokens de {faction_id}.")
 
-        if held > 0 and target_perk:
-            client.table("pending_rankups").insert({
-                "character_code": character_code,
-                "faction_id": faction_id,
-                "new_perk": target_perk,
-                "tokens_held": held,
-                "status": "pending",
-                "created_at": utc_now_iso()
-            }).execute()
+        if force:
+            # Automatically accept all ranks that are now reached
+            await self._auto_accept_rankups(character_code, faction_id)
+        else:
+            # Normal rank‑up handling
+            if held > 0 and target_perk:
+                client.table("pending_rankups").insert({
+                    "character_code": character_code,
+                    "faction_id": faction_id,
+                    "new_perk": target_perk,
+                    "tokens_held": held,
+                    "status": "pending",
+                    "created_at": utc_now_iso()
+                }).execute()
 
-            title = self._rank_name(target_perk)
-            await self._announce_rankup(ctx.guild.id, character_code, faction_id, title, discord_id)
+                title = self._rank_name(target_perk)
+                await self._announce_rankup(ctx.guild.id, character_code, faction_id, title, discord_id)
 
         await self._check_boon_removal(ctx, character_code, faction_id, new_tokens)
+
+    # =================================================================
+    # Auto‑accept rank‑ups (force mode) – bypasses cap
+    # =================================================================
+    async def _auto_accept_rankups(self, character_code, faction_id):
+        client = get_supabase()
+        prog = await self._get_progress(character_code, faction_id)
+        current_tokens = prog["tokens"]
+        unlocked = prog.get("perks_unlocked", []) or []
+
+        # Process thresholds from lowest to highest
+        for i, t in enumerate(THRESHOLDS):
+            perk = PERKS[i]
+            if current_tokens >= t and perk not in unlocked:
+                # Insert boon
+                client.table("character_boons").insert({
+                    "character_code": character_code,
+                    "faction_id": faction_id,
+                    "boon_key": perk,
+                    "unlocked_at": utc_now_iso()
+                }).execute()
+                unlocked.append(perk)
+
+        # Update perks_unlocked
+        client.table("faction_progress").update({
+            "perks_unlocked": unlocked,
+            "updated_at": utc_now_iso()
+        }).eq("character_code", character_code).eq("faction_id", faction_id).execute()
 
     # =================================================================
     # Remove tokens
@@ -732,9 +779,8 @@ class FactionProgression(commands.Cog):
             print(f"[FactionProgression] rankup error: {e}")
             await ctx.send(f"❌ Error: {e}")
 
-
 # ---------------------------------------------------------------------------
-# RankUp View
+# RankUp View – max-boon cap logic
 # ---------------------------------------------------------------------------
 class RankupView(discord.ui.View):
     def __init__(self, cog, ctx, pending_row, boon_count, discord_id=None):
@@ -746,10 +792,7 @@ class RankupView(discord.ui.View):
         self.discord_id = discord_id
 
         if self.boon_count >= MAX_BOONS:
-            reject = discord.ui.Button(label="Rechazar", style=discord.ButtonStyle.red)
-            reject.callback = self.reject_callback
-            self.add_item(reject)
-
+            # Abandonar buttons FIRST (green, row 0)
             client = get_supabase()
             res = client.table("character_boons") \
                 .select("faction_id") \
@@ -764,11 +807,16 @@ class RankupView(discord.ui.View):
             for fid in sorted(factions_with_boons):
                 btn = discord.ui.Button(
                     label=f"Abandonar {fid}",
-                    style=discord.ButtonStyle.secondary,
-                    row=1
+                    style=discord.ButtonStyle.green,
+                    row=0
                 )
                 btn.callback = self.make_abandon_callback(fid)
                 self.add_item(btn)
+
+            # Rechazar button AFTER (red, row 1)
+            reject = discord.ui.Button(label="Rechazar", style=discord.ButtonStyle.red, row=1)
+            reject.callback = self.reject_callback
+            self.add_item(reject)
         else:
             accept = discord.ui.Button(label="Aceptar", style=discord.ButtonStyle.green)
             accept.callback = self.accept_callback
@@ -983,7 +1031,6 @@ class RankupView(discord.ui.View):
         await interaction.response.defer()
         client = get_supabase()
 
-        # Simply mark the pending rank‑up as rejected; do NOT add to perks_rejected
         client.table("pending_rankups").update({
             "status": "rejected",
             "resolved_at": utc_now_iso()
