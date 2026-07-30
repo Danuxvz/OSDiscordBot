@@ -11,6 +11,7 @@ from DiscordBot.items import refresh_items_table
 from DiscordBot.factions import Factions
 from DiscordBot.tables import Tables
 from DiscordBot.views import preload_caches
+from DiscordBot.faction_progression import FactionProgression
 
 # --------------------------------------------------------------------
 # Daruma queue worker (new)
@@ -90,6 +91,7 @@ async def main():
         await bot.add_cog(BotCommands(bot))
         await bot.add_cog(Factions(bot))
         await bot.add_cog(Tables(bot))
+        await bot.add_cog(FactionProgression(bot))
         await bot.start(DISCORD_TOKEN)
 
 if __name__ == "__main__":

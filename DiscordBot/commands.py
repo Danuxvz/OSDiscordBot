@@ -891,6 +891,19 @@ class BotCommands(commands.Cog):
             ),
             inline=False
         )
+        # ── New section ──
+        embed.add_field(
+            name="📈 Progresión de Facciones",
+            value=(
+                "**`facción`** `código` — Muestra tu progreso en la facción.\n"
+                "**⚙️ `facción`** `código +x/-y` — Añade o quita experiencia en la `facción` (admin).\n"
+                "**rank** `código` — Muestra el progreso de todas las facciones.\n"
+                "**rankup** `código` — Acepta o rechaza una subida de rango.\n"
+                "**factionboons** `código` — Lista los boons activos de un personaje.\n"
+                "**⚙️ setrankupchannel** `#canal` — Establece el canal de anuncios de rank‑up (admin)."
+            ),
+            inline=False
+        )
         await ctx.send(embed=embed)
 
     @commands.command()

@@ -53,7 +53,7 @@ class TableView(discord.ui.View):
 
 
 class Tables(commands.Cog):
-    """Dynamic table system with direct commands per table."""
+    """Dynamic table system with global tables."""
 
     def __init__(self, bot):
         self.bot = bot
@@ -97,7 +97,7 @@ class Tables(commands.Cog):
             args = args.strip().lower()
             if args == "show":
                 return await self.table_show(ctx, name=table_name)
-            entries = await self._get_table_entries(table_name, str(ctx.guild.id))
+            entries = await self._get_table_entries(table_name)
             if not entries:
                 await ctx.send(f"❌ The `{table_name}` table is empty.")
                 return
@@ -113,21 +113,13 @@ class Tables(commands.Cog):
         self._table_commands[table_name] = cmd
 
     # -----------------------------------------------------------------
-    # Helpers
+    # Helpers – all guild logic removed
     # -----------------------------------------------------------------
-    async def _get_table_entries(self, table_name: str, guild_id: str = None) -> list[dict]:
+    async def _get_table_entries(self, table_name: str) -> list[dict]:
+        """Return entries for a table (global only)."""
         if not supabase:
             return []
         table_name = table_name.strip().lower()
-        if guild_id:
-            res = supabase.table("custom_tables") \
-                .select("id, description, entry_order") \
-                .eq("table_name", table_name) \
-                .eq("guild_id", guild_id) \
-                .order("entry_order") \
-                .execute()
-            if res and res.data:
-                return res.data
         res = supabase.table("custom_tables") \
             .select("id, description, entry_order") \
             .eq("table_name", table_name) \
@@ -136,11 +128,10 @@ class Tables(commands.Cog):
             .execute()
         return res.data if res else []
 
-    async def _get_all_table_names(self, guild_id: str = None) -> list[str]:
-        """Return distinct table names (global + guild-specific)."""
+    async def _get_all_table_names(self) -> list[str]:
+        """Return distinct global table names."""
         names = set()
         if supabase:
-            # Global
             res = supabase.table("custom_tables") \
                 .select("table_name") \
                 .is_("guild_id", "null") \
@@ -150,17 +141,6 @@ class Tables(commands.Cog):
                     clean = r["table_name"].strip().lower()
                     if clean:
                         names.add(clean)
-            # Guild-specific
-            if guild_id:
-                res = supabase.table("custom_tables") \
-                    .select("table_name") \
-                    .eq("guild_id", guild_id) \
-                    .execute()
-                if res and res.data:
-                    for r in res.data:
-                        clean = r["table_name"].strip().lower()
-                        if clean:
-                            names.add(clean)
         return sorted(names)
 
     @staticmethod
@@ -172,9 +152,9 @@ class Tables(commands.Cog):
     # -----------------------------------------------------------------
     @commands.group(name="table", aliases=["tbl"], invoke_without_command=True)
     async def table_group(self, ctx: commands.Context):
-        names = await self._get_all_table_names(str(ctx.guild.id))
+        names = await self._get_all_table_names()
         if not names:
-            await ctx.send("ℹ️ No tables available in this server.")
+            await ctx.send("ℹ️ No tables available.")
             return
         desc = "\n".join(f"• `{n}`" for n in names)
         embed = discord.Embed(title="Available Tables", description=desc, color=discord.Color.blurple())
@@ -193,13 +173,14 @@ class Tables(commands.Cog):
         if self.bot.get_command(name):
             await ctx.send(f"❌ A command named `{name}` already exists.")
             return
-        existing = await self._get_table_entries(name, str(ctx.guild.id))
+        existing = await self._get_table_entries(name)
         if existing:
             await ctx.send(f"❌ Table `{name}` already exists.")
             return
         try:
+            # Insert with guild_id = None (global)
             supabase.table("custom_tables").insert({
-                "guild_id": str(ctx.guild.id),
+                "guild_id": None,
                 "table_name": name,
                 "description": "Placeholder – table created",
                 "entry_order": 0
@@ -220,11 +201,11 @@ class Tables(commands.Cog):
         if not desc:
             await ctx.send("❌ Please provide a description.")
             return
-        entries = await self._get_table_entries(name, str(ctx.guild.id))
+        entries = await self._get_table_entries(name)
         next_order = max((e["entry_order"] for e in entries), default=0) + 1
         try:
             supabase.table("custom_tables").insert({
-                "guild_id": str(ctx.guild.id),
+                "guild_id": None,          # global
                 "table_name": name,
                 "description": desc,
                 "entry_order": next_order
@@ -243,17 +224,14 @@ class Tables(commands.Cog):
         try:
             supabase.table("custom_tables") \
                 .delete() \
-                .eq("guild_id", str(ctx.guild.id)) \
                 .eq("table_name", name) \
                 .eq("entry_order", entry_order) \
+                .is_("guild_id", "null") \
                 .execute()
             await ctx.send(f"✅ Removed entry #{entry_order} from table `{name}`.")
         except Exception as e:
             await ctx.send(f"❌ Error: {e}")
 
-    # -----------------------------------------------------------------
-    # NEW: >table sort <name> (admin only)
-    # -----------------------------------------------------------------
     @table_group.command(name="sort")
     @commands.has_permissions(administrator=True)
     async def table_sort(self, ctx: commands.Context, name: str):
@@ -262,12 +240,11 @@ class Tables(commands.Cog):
             await ctx.send("❌ Supabase not configured.")
             return
         name = name.strip().lower()
-        entries = await self._get_table_entries(name, str(ctx.guild.id))
+        entries = await self._get_table_entries(name)
         if not entries:
             await ctx.send(f"❌ Table `{name}` not found.")
             return
 
-        # Sort by description case-insensitive
         sorted_entries = sorted(entries, key=lambda e: e["description"].lower())
 
         try:
@@ -280,14 +257,11 @@ class Tables(commands.Cog):
         except Exception as e:
             await ctx.send(f"❌ Error sorting table: {e}")
 
-    # -----------------------------------------------------------------
-    # >table show <name>
-    # -----------------------------------------------------------------
     @table_group.command(name="show", aliases=["list"])
     async def table_show(self, ctx: commands.Context, *, name: str):
         """Display all entries of a table (paginated)."""
         name = name.strip().lower()
-        entries = await self._get_table_entries(name, str(ctx.guild.id))
+        entries = await self._get_table_entries(name)
         if not entries:
             await ctx.send(f"❌ Table `{name}` not found.")
             return
@@ -295,12 +269,9 @@ class Tables(commands.Cog):
         embed = view.get_page_data()
         await ctx.send(embed=embed, view=view)
 
-    # -----------------------------------------------------------------
-    # >roll <table_name>
-    # -----------------------------------------------------------------
     @commands.command(name="roll", aliases=["r"])
     async def roll_command(self, ctx: commands.Context, *, table_name: str):
-        entries = await self._get_table_entries(table_name.strip().lower(), str(ctx.guild.id))
+        entries = await self._get_table_entries(table_name.strip().lower())
         if not entries:
             await ctx.send(f"❌ Table `{table_name}` not found.")
             return
