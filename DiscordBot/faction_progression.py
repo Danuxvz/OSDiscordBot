@@ -12,7 +12,7 @@ from supabase import create_client
 # ---------------------------------------------------------------------------
 THRESHOLDS = [5, 10, 20, 30, 45]
 PERKS      = ["A", "B", "C", "D", "E"]
-RANK_NAMES = ["Notario", "Estenógrafo", "Jurado", "Fiscal", "Magistrado"]   # ← fixed rank names
+RANK_NAMES = ["Notario", "Estenógrafo", "Jurado", "Fiscal", "Magistrado"]
 MAX_BOONS  = 5
 FACTION_ITEM_MAP = {
     "hexen":    "Hexen",
@@ -88,15 +88,11 @@ async def ensure_tables():
     for table in required:
         try:
             res = client.table(table).select("id").limit(1).execute()
-            if res and res.data is not None:
-                print(f"[FactionProgression] Table `{table}` is accessible.")
-            else:
-                print(f"[FactionProgression] Table `{table}` returned None data (may be empty or inaccessible).")
         except Exception as e:
             print(f"[FactionProgression] Table `{table}` check failed: {e}")
 
 # ---------------------------------------------------------------------------
-# Character resolver – case‑insensitive exact match + safe fuzzy
+# Character resolver
 # ---------------------------------------------------------------------------
 async def resolve_character(code):
     code = code.upper().strip()
@@ -123,10 +119,8 @@ async def resolve_character(code):
                 .execute()
             if row and row.data:
                 return row.data["name"].upper(), row.data["owner_id"], row.data["name"].upper()
-
     except Exception as e:
         print(f"[FactionProgression] resolve_character error: {e}")
-
     return None
 
 # ---------------------------------------------------------------------------
@@ -140,11 +134,7 @@ async def build_faction_info_embed_and_view(ctx, faction_name):
 
         info = await factions_cog._get_faction_info(ctx.guild.id, faction_name)
         if not info:
-            return discord.Embed(
-                title="Not Found",
-                description=f"No faction named **{faction_name}** exists in this server.",
-                color=discord.Color.red()
-            ), None
+            return discord.Embed(title="Not Found", description=f"No faction named **{faction_name}** exists in this server.", color=discord.Color.red()), None
 
         color_hex = info.get('color', '#FFFFFF').lstrip('#')
         try:
@@ -152,11 +142,7 @@ async def build_faction_info_embed_and_view(ctx, faction_name):
         except Exception:
             color = discord.Color.blue()
 
-        embed = discord.Embed(
-            title=info['name'],
-            description=info.get('description', ''),
-            color=color
-        )
+        embed = discord.Embed(title=info['name'], description=info.get('description', ''), color=color)
         if info.get('image_url'):
             embed.set_thumbnail(url=info['image_url'])
 
@@ -194,7 +180,6 @@ async def build_faction_info_embed_and_view(ctx, faction_name):
             print(f"[FactionProgression] FactionView build error: {e}")
 
         return embed, view
-
     except Exception as e:
         print(f"[FactionProgression] build_faction_info_embed error: {e}")
         return discord.Embed(title="Error", description=f"Failed to load faction info: {e}", color=discord.Color.red()), None
@@ -281,13 +266,12 @@ class FactionProgression(commands.Cog):
         return res
 
     # -----------------------------------------------------------------
-    # Rank name helper (fixed, no sheet lookup)
+    # Rank name helper (hardcoded)
     # -----------------------------------------------------------------
     def _rank_name(self, letter: str) -> str:
-        """Return the hardcoded rank name for a boon letter."""
         if letter in PERKS:
             return RANK_NAMES[PERKS.index(letter)]
-        return letter  # fallback
+        return letter
 
     # -----------------------------------------------------------------
     # Boon info from sheet (used only after acceptance)
@@ -337,7 +321,7 @@ class FactionProgression(commands.Cog):
             await ctx.send(f"⚠️ {character_code} ha perdido el/los rango(s): {', '.join(names)} por falta de experiencia.")
 
     # =================================================================
-    # >rank <code> – all factions with separators
+    # >rank <code>
     # =================================================================
     @commands.command(name="rank")
     async def rank_command(self, ctx, code: str):
@@ -350,10 +334,7 @@ class FactionProgression(commands.Cog):
             char_code, _, _ = char_info
 
             faction_ids = ["Hexen", "Yuugen", "Carnival"]
-            embed = discord.Embed(
-                title=f"Progreso de Facción de {char_code}",
-                color=discord.Color.blue()
-            )
+            embed = discord.Embed(title=f"Progreso de Facción de {char_code}", color=discord.Color.blue())
 
             for i, fid in enumerate(faction_ids):
                 if i > 0:
@@ -569,6 +550,14 @@ class FactionProgression(commands.Cog):
         unlocked = prog.get("perks_unlocked", []) or []
         rejected = prog.get("perks_rejected", []) or []
 
+        # ---- Remove any stale pending rank‑ups for this character/faction ----
+        client = get_supabase()
+        client.table("pending_rankups") \
+            .delete() \
+            .eq("character_code", character_code) \
+            .eq("faction_id", faction_id) \
+            .execute()
+
         max_possible = 45 - current_tokens
         if amount > max_possible:
             await ctx.send(f"❌ {character_code} ya tiene {current_tokens} tokens (máx 45). Solo se pueden añadir {max_possible}.")
@@ -598,7 +587,6 @@ class FactionProgression(commands.Cog):
                 return
 
         new_tokens = current_tokens + immediate
-        client = get_supabase()
         client.table("faction_progress").update({
             "tokens": new_tokens,
             "updated_at": utc_now_iso()
@@ -616,7 +604,6 @@ class FactionProgression(commands.Cog):
                 "created_at": utc_now_iso()
             }).execute()
 
-            # Announce with rank name only
             title = self._rank_name(target_perk)
             await self._announce_rankup(ctx.guild.id, character_code, faction_id, title, discord_id)
 
@@ -695,7 +682,7 @@ class FactionProgression(commands.Cog):
         await self._faction_command(ctx, "Carnival", args)
 
     # -------------------------------------------------------------------
-    # >rankup – no boon description before acceptance
+    # >rankup
     # -------------------------------------------------------------------
     @commands.command(name="rankup")
     async def rankup(self, ctx, code: str):
@@ -744,7 +731,7 @@ class FactionProgression(commands.Cog):
 
 
 # ---------------------------------------------------------------------------
-# RankUp View – handles re‑holding of tokens
+# RankUp View
 # ---------------------------------------------------------------------------
 class RankupView(discord.ui.View):
     def __init__(self, cog, ctx, pending_row, boon_count, discord_id=None):
@@ -799,6 +786,7 @@ class RankupView(discord.ui.View):
             "unlocked_at": utc_now_iso()
         }).execute()
 
+        # Update perks_unlocked in faction_progress
         prog = client.table("faction_progress") \
             .select("tokens,perks_unlocked,perks_rejected") \
             .eq("character_code", self.row["character_code"]) \
@@ -806,11 +794,19 @@ class RankupView(discord.ui.View):
             .maybe_single().execute()
         current_tokens = prog.data["tokens"] if prog.data else 0
         held = self.row["tokens_held"]
-        unlocked = prog.data.get("perks_unlocked", []) if prog.data else []
-        rejected = prog.data.get("perks_rejected", []) if prog.data else []
-        unlocked.append(self.row["new_perk"])  # mark current as unlocked
+        unlocked = (prog.data.get("perks_unlocked") or []) if prog.data else []
+        rejected = (prog.data.get("perks_rejected") or []) if prog.data else []
 
-        # Find the next pending threshold
+        if self.row["new_perk"] not in unlocked:
+            unlocked.append(self.row["new_perk"])
+
+        # Save updated perks_unlocked immediately
+        client.table("faction_progress").update({
+            "perks_unlocked": unlocked,
+            "updated_at": utc_now_iso()
+        }).eq("character_code", self.row["character_code"]).eq("faction_id", self.row["faction_id"]).execute()
+
+        # Find the next pending threshold (for re‑holding tokens)
         next_perk = None
         next_threshold = None
         for i, t in enumerate(THRESHOLDS):
@@ -849,20 +845,27 @@ class RankupView(discord.ui.View):
             "updated_at": utc_now_iso()
         }).eq("character_code", self.row["character_code"]).eq("faction_id", self.row["faction_id"]).execute()
 
+        # Mark this pending as accepted
         client.table("pending_rankups").update({
             "status": "accepted",
             "resolved_at": utc_now_iso()
         }).eq("id", self.row["id"]).execute()
 
-        # Show boon description NOW, after acceptance
+        # ----- Display boon info in an embed (like >item) -----
         info = await self.cog._get_boon_info(self.row["faction_id"], self.row["new_perk"])
         rank_name = self.cog._rank_name(self.row["new_perk"])
-        await self.ctx.send(
-            f"✅ ¡{self.row['character_code']} ha aceptado el rango {rank_name} en {self.row['faction_id']}!\n"
-            f"*{info['description']}*"
-        )
 
-        # Create next pending rank‑up if tokens remain held, or if exactly at next threshold
+        embed = discord.Embed(
+            title=f"{self.row['faction_id']}:{self.row['new_perk']} – {info['title']}",
+            description=info['description'],
+            color=discord.Color.green()
+        )
+        embed.add_field(name="Tipo", value=info['type'], inline=True)
+        embed.set_footer(text=f"¡{self.row['character_code']} ha aceptado el rango {rank_name}!")
+
+        await self.ctx.send(embed=embed)
+
+        # ----- Create next pending rank‑up if tokens remain or threshold crossed -----
         if remaining_held > 0 and next_perk:
             client.table("pending_rankups").insert({
                 "character_code": self.row["character_code"],
