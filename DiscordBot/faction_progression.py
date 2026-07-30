@@ -88,10 +88,6 @@ async def ensure_tables():
     for table in required:
         try:
             res = client.table(table).select("id").limit(1).execute()
-            if res and res.data is not None:
-                print(f"[FactionProgression] Table `{table}` is accessible.")
-            else:
-                print(f"[FactionProgression] Table `{table}` returned None data (may be empty or inaccessible).")
         except Exception as e:
             print(f"[FactionProgression] Table `{table}` check failed: {e}")
 
@@ -102,7 +98,7 @@ async def resolve_character(code):
     code = code.upper().strip()
     try:
         client = get_supabase()
-        all_rows = client.table("characters_export") \
+        all_rows = client   .table("characters_export") \
             .select("name,owner_id") \
             .execute()
         if not all_rows or not all_rows.data:
@@ -301,6 +297,14 @@ class FactionProgression(commands.Cog):
         if not boons.data:
             return
 
+        # Get current perks_unlocked from DB
+        prog = client.table("faction_progress") \
+            .select("perks_unlocked") \
+            .eq("character_code", character_code) \
+            .eq("faction_id", faction_id) \
+            .maybe_single().execute()
+        unlocked = (prog.data.get("perks_unlocked") or []) if prog.data else []
+
         removed = []
         for b in boons.data:
             perk = b["boon_key"]
@@ -310,8 +314,16 @@ class FactionProgression(commands.Cog):
                 if new_tokens < threshold:
                     client.table("character_boons").delete().eq("id", b["id"]).execute()
                     removed.append(perk)
+                    if perk in unlocked:
+                        unlocked.remove(perk)
 
         if removed:
+            # Save the cleaned perks_unlocked list
+            client.table("faction_progress").update({
+                "perks_unlocked": unlocked,
+                "updated_at": utc_now_iso()
+            }).eq("character_code", character_code).eq("faction_id", faction_id).execute()
+
             names = [self._rank_name(p) for p in removed]
             await ctx.send(f"⚠️ {character_code} ha perdido el/los rango(s): {', '.join(names)} por falta de experiencia.")
 
