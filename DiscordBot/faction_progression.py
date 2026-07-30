@@ -88,6 +88,10 @@ async def ensure_tables():
     for table in required:
         try:
             res = client.table(table).select("id").limit(1).execute()
+            if res and res.data is not None:
+                print(f"[FactionProgression] Table `{table}` is accessible.")
+            else:
+                print(f"[FactionProgression] Table `{table}` returned None data (may be empty or inaccessible).")
         except Exception as e:
             print(f"[FactionProgression] Table `{table}` check failed: {e}")
 
@@ -265,17 +269,11 @@ class FactionProgression(commands.Cog):
             raise Exception(res.get("error_message") or "RP‑forge command failed")
         return res
 
-    # -----------------------------------------------------------------
-    # Rank name helper (hardcoded)
-    # -----------------------------------------------------------------
     def _rank_name(self, letter: str) -> str:
         if letter in PERKS:
             return RANK_NAMES[PERKS.index(letter)]
         return letter
 
-    # -----------------------------------------------------------------
-    # Boon info from sheet (used only after acceptance)
-    # -----------------------------------------------------------------
     async def _get_boon_info(self, faction_id: str, letter: str) -> dict:
         try:
             sheet = await get_cached_faction_async()
@@ -293,9 +291,6 @@ class FactionProgression(commands.Cog):
             print(f"[FactionProgression] _get_boon_info error: {e}")
         return {"title": f"Rank {letter}", "description": "", "type": "Unknown", "released": "true"}
 
-    # =================================================================
-    # Boon removal when tokens fall below threshold
-    # =================================================================
     async def _check_boon_removal(self, ctx, character_code, faction_id, new_tokens):
         client = get_supabase()
         boons = client.table("character_boons") \
@@ -372,7 +367,6 @@ class FactionProgression(commands.Cog):
                 embed.add_field(name=f"**{fid}**", value=field_value, inline=False)
 
             await ctx.send(embed=embed)
-
         except Exception as e:
             print(f"[FactionProgression] rank command error: {e}")
             await ctx.send(f"❌ Error: {e}")
@@ -533,7 +527,7 @@ class FactionProgression(commands.Cog):
             await ctx.send(f"❌ Error inesperado: {e}")
 
     # =================================================================
-    # Token giving – stops n-1 before next rank
+    # Token giving
     # =================================================================
     async def _give_faction_tokens(self, ctx, faction_id: str, amount: int, character_code: str, discord_id: str = None):
         if amount <= 0:
@@ -550,7 +544,6 @@ class FactionProgression(commands.Cog):
         unlocked = prog.get("perks_unlocked", []) or []
         rejected = prog.get("perks_rejected", []) or []
 
-        # ---- Remove any stale pending rank‑ups for this character/faction ----
         client = get_supabase()
         client.table("pending_rankups") \
             .delete() \
@@ -642,7 +635,7 @@ class FactionProgression(commands.Cog):
         await self._check_boon_removal(ctx, character_code, faction_id, new_tokens)
 
     # =================================================================
-    # Rank‑up announcement – title only, no spoilers
+    # Rank‑up announcement
     # =================================================================
     async def _announce_rankup(self, guild_id, character_code, faction_id, perk_title, discord_id):
         cfg = get_guild_cfg(guild_id)
@@ -709,7 +702,7 @@ class FactionProgression(commands.Cog):
             rank_name = self._rank_name(row["new_perk"])
 
             boons_res = client.table("character_boons") \
-                .select("id") \
+                .select("id,faction_id,boon_key") \
                 .eq("character_code", character_code) \
                 .execute()
             boon_count = len(boons_res.data or [])
@@ -731,7 +724,7 @@ class FactionProgression(commands.Cog):
 
 
 # ---------------------------------------------------------------------------
-# RankUp View
+# RankUp View – max-boon cap logic
 # ---------------------------------------------------------------------------
 class RankupView(discord.ui.View):
     def __init__(self, cog, ctx, pending_row, boon_count, discord_id=None):
@@ -742,40 +735,119 @@ class RankupView(discord.ui.View):
         self.boon_count = boon_count
         self.discord_id = discord_id
 
-        accept = discord.ui.Button(label="Aceptar", style=discord.ButtonStyle.green)
-        accept.callback = self.accept_callback
-        self.add_item(accept)
-
-        reject = discord.ui.Button(label="Rechazar", style=discord.ButtonStyle.red)
-        reject.callback = self.reject_callback
-        self.add_item(reject)
-
         if self.boon_count >= MAX_BOONS:
+            # Only show Reject + one "Abandonar {faction}" button per OTHER faction
+            reject = discord.ui.Button(label="Rechazar", style=discord.ButtonStyle.red)
+            reject.callback = self.reject_callback
+            self.add_item(reject)
+
             client = get_supabase()
             res = client.table("character_boons") \
-                .select("*") \
+                .select("faction_id") \
                 .eq("character_code", self.row["character_code"]) \
                 .execute()
+            factions_with_boons = set()
             for b in (res.data or []):
+                fid = b["faction_id"]
+                if fid != self.row["faction_id"]:   # exclude the faction being ranked up
+                    factions_with_boons.add(fid)
+
+            for fid in sorted(factions_with_boons):
                 btn = discord.ui.Button(
-                    label=f"Abandonar {b['faction_id']} {b['boon_key']}",
+                    label=f"Abandonar {fid}",
                     style=discord.ButtonStyle.secondary,
                     row=1
                 )
-                btn.callback = self.make_abandon_callback(b["id"])
+                btn.callback = self.make_abandon_callback(fid)
                 self.add_item(btn)
+        else:
+            accept = discord.ui.Button(label="Aceptar", style=discord.ButtonStyle.green)
+            accept.callback = self.accept_callback
+            self.add_item(accept)
 
-    def make_abandon_callback(self, boon_id):
+            reject = discord.ui.Button(label="Rechazar", style=discord.ButtonStyle.red)
+            reject.callback = self.reject_callback
+            self.add_item(reject)
+
+    def make_abandon_callback(self, target_faction: str):
         async def callback(interaction: discord.Interaction):
-            await self.abandon_and_accept(interaction, boon_id)
+            await self.abandon_faction_and_accept(interaction, target_faction)
         return callback
 
-    async def accept_callback(self, interaction: discord.Interaction):
+    async def abandon_faction_and_accept(self, interaction: discord.Interaction, target_faction: str):
         if interaction.user != self.ctx.author:
             await interaction.response.send_message("Este no es tu rank‑up.", ephemeral=True)
             return
-
         await interaction.response.defer()
+        client = get_supabase()
+
+        # 1) Find the highest boon for target_faction
+        boons = client.table("character_boons") \
+            .select("id,boon_key") \
+            .eq("character_code", self.row["character_code"]) \
+            .eq("faction_id", target_faction) \
+            .execute()
+        if not boons.data:
+            await self.ctx.send("❌ No se encontraron boons para abandonar en esa facción.")
+            return
+
+        # Determine which boon_key is the highest (largest index in PERKS)
+        highest_boon = None
+        highest_idx = -1
+        for b in boons.data:
+            if b["boon_key"] in PERKS:
+                idx = PERKS.index(b["boon_key"])
+                if idx > highest_idx:
+                    highest_idx = idx
+                    highest_boon = b
+
+        if not highest_boon:
+            await self.ctx.send("❌ No se pudo determinar el boon más alto.")
+            return
+
+        removed_perk = highest_boon["boon_key"]
+        removed_idx = highest_idx
+        removed_boon_id = highest_boon["id"]
+
+        # 2) Delete that boon
+        client.table("character_boons").delete().eq("id", removed_boon_id).execute()
+
+        # 3) Reduce tokens of target_faction to the previous threshold
+        if removed_idx == 0:
+            new_tokens = 0
+        else:
+            new_tokens = THRESHOLDS[removed_idx - 1]
+
+        # Update tokens and also remove the perk from perks_unlocked
+        prog = client.table("faction_progress") \
+            .select("perks_unlocked") \
+            .eq("character_code", self.row["character_code"]) \
+            .eq("faction_id", target_faction) \
+            .maybe_single().execute()
+        unlocked = (prog.data.get("perks_unlocked") or []) if prog.data else []
+        if removed_perk in unlocked:
+            unlocked.remove(removed_perk)
+
+        client.table("faction_progress").update({
+            "tokens": new_tokens,
+            "perks_unlocked": unlocked,
+            "updated_at": utc_now_iso()
+        }).eq("character_code", self.row["character_code"]).eq("faction_id", target_faction).execute()
+
+        # 4) Notify the user
+        rank_name = self.cog._rank_name(removed_perk)
+        await self.ctx.send(f"⚠️ Has abandonado el rango **{rank_name}** en **{target_faction}**. Experiencia ajustada a {new_tokens}.")
+
+        # 5) Proceed with acceptance of the original rank-up
+        # We reuse accept_callback but it will now work because boon_count will be < MAX_BOONS.
+        # However, accept_callback expects a button press from the view, but we can call it directly.
+        # We'll stop this view and call the internal acceptance logic.
+        self.stop()
+        await interaction.message.edit(view=None)
+        await self._accept_rankup(interaction)
+
+    async def _accept_rankup(self, interaction: discord.Interaction):
+        """Core acceptance logic shared by normal accept and abandon+accept."""
         client = get_supabase()
 
         # Add the new boon
@@ -800,13 +872,12 @@ class RankupView(discord.ui.View):
         if self.row["new_perk"] not in unlocked:
             unlocked.append(self.row["new_perk"])
 
-        # Save updated perks_unlocked immediately
         client.table("faction_progress").update({
             "perks_unlocked": unlocked,
             "updated_at": utc_now_iso()
         }).eq("character_code", self.row["character_code"]).eq("faction_id", self.row["faction_id"]).execute()
 
-        # Find the next pending threshold (for re‑holding tokens)
+        # Find next pending threshold for re‑holding tokens
         next_perk = None
         next_threshold = None
         for i, t in enumerate(THRESHOLDS):
@@ -845,13 +916,13 @@ class RankupView(discord.ui.View):
             "updated_at": utc_now_iso()
         }).eq("character_code", self.row["character_code"]).eq("faction_id", self.row["faction_id"]).execute()
 
-        # Mark this pending as accepted
+        # Mark pending as accepted
         client.table("pending_rankups").update({
             "status": "accepted",
             "resolved_at": utc_now_iso()
         }).eq("id", self.row["id"]).execute()
 
-        # ----- Display boon info in an embed (like >item) -----
+        # Show boon info in an embed
         info = await self.cog._get_boon_info(self.row["faction_id"], self.row["new_perk"])
         rank_name = self.cog._rank_name(self.row["new_perk"])
 
@@ -865,7 +936,7 @@ class RankupView(discord.ui.View):
 
         await self.ctx.send(embed=embed)
 
-        # ----- Create next pending rank‑up if tokens remain or threshold crossed -----
+        # Create next pending rank‑up if tokens remain or threshold crossed
         if remaining_held > 0 and next_perk:
             client.table("pending_rankups").insert({
                 "character_code": self.row["character_code"],
@@ -897,9 +968,7 @@ class RankupView(discord.ui.View):
                 title = self.cog._rank_name(next_perk)
                 await self.cog._announce_rankup(self.ctx.guild.id, self.row["character_code"], self.row["faction_id"], title, self.discord_id)
 
-        self.stop()
-        await interaction.message.edit(view=None)
-
+        # Notify if more pending
         next_pending = client.table("pending_rankups") \
             .select("id") \
             .eq("character_code", self.row["character_code"]) \
@@ -907,6 +976,15 @@ class RankupView(discord.ui.View):
             .execute()
         if next_pending.data:
             await self.ctx.send("ℹ️ Tienes más rank‑ups pendientes. Usa `>rankup` de nuevo.")
+
+    async def accept_callback(self, interaction: discord.Interaction):
+        if interaction.user != self.ctx.author:
+            await interaction.response.send_message("Este no es tu rank‑up.", ephemeral=True)
+            return
+        await interaction.response.defer()
+        self.stop()
+        await interaction.message.edit(view=None)
+        await self._accept_rankup(interaction)
 
     async def reject_callback(self, interaction: discord.Interaction):
         if interaction.user != self.ctx.author:
@@ -936,12 +1014,3 @@ class RankupView(discord.ui.View):
         await self.ctx.send("❌ Rank rechazado. Tokens no entregados.")
         self.stop()
         await interaction.message.edit(view=None)
-
-    async def abandon_and_accept(self, interaction: discord.Interaction, boon_id: int):
-        if interaction.user != self.ctx.author:
-            await interaction.response.send_message("Este no es tu rank‑up.", ephemeral=True)
-            return
-        await interaction.response.defer()
-
-        get_supabase().table("character_boons").delete().eq("id", boon_id).execute()
-        await self.accept_callback(interaction)
