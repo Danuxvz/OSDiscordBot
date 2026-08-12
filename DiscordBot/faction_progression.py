@@ -579,8 +579,27 @@ class FactionProgression(commands.Cog):
         current_tokens = prog["tokens"]
         unlocked = prog.get("perks_unlocked", []) or []
 
-        # Clean up stale pending rank‑ups
         client = get_supabase()
+
+        # ----- Fetch existing pending (if any) to merge later -----
+        existing_pending = None
+        existing_held = 0
+        try:
+            res = client.table("pending_rankups") \
+                .select("tokens_held,new_perk") \
+                .eq("character_code", character_code) \
+                .eq("faction_id", faction_id) \
+                .eq("status", "pending") \
+                .order("created_at") \
+                .limit(1) \
+                .execute()
+            if res.data:
+                existing_pending = res.data[0]
+                existing_held = existing_pending["tokens_held"]
+        except Exception:
+            pass
+
+        # ----- Clean up stale pending rank‑ups -----
         client.table("pending_rankups") \
             .delete() \
             .eq("character_code", character_code) \
@@ -595,11 +614,9 @@ class FactionProgression(commands.Cog):
                 return
 
         if force:
-            # Give all tokens now, then auto‑accept all eligible ranks
             immediate = amount
             held = 0
         else:
-            # Normal mode: stop n-1 before next rank
             immediate = amount
             held = 0
             target_perk = None
@@ -613,8 +630,6 @@ class FactionProgression(commands.Cog):
                         held = amount - immediate
                         target_perk = perk
                     break
-
-            # In normal mode we handle target_perk and held later
 
         if immediate > 0:
             try:
@@ -632,16 +647,17 @@ class FactionProgression(commands.Cog):
         await ctx.send(f"✅ {character_code} ahora tiene {new_tokens} tokens de {faction_id}.")
 
         if force:
-            # Automatically accept all ranks that are now reached
             await self._auto_accept_rankups(character_code, faction_id)
         else:
-            # Normal rank‑up handling
             if held > 0 and target_perk:
+                # Merge with any previously existing held tokens
+                total_held = held + existing_held
+
                 client.table("pending_rankups").insert({
                     "character_code": character_code,
                     "faction_id": faction_id,
                     "new_perk": target_perk,
-                    "tokens_held": held,
+                    "tokens_held": total_held,
                     "status": "pending",
                     "created_at": utc_now_iso()
                 }).execute()
