@@ -194,6 +194,19 @@ class FactionProgression(commands.Cog):
         self.bot = bot
         asyncio.create_task(ensure_tables())
 
+    @commands.command(name="checkfactionsheet")
+    @commands.check(is_admin_or_bot_admin)
+    async def check_faction_sheet(self, ctx):
+        try:
+            sheet = await get_cached_faction_async()
+            if sheet is None:
+                await ctx.send("❌ No faction sheet data (sheet is None).")
+            else:
+                await ctx.send(f"✅ Faction sheet loaded. **{len(sheet)}** entries.\n"
+                            f"Sample: `{list(sheet.keys())[:5]}`")
+        except Exception as e:
+            await ctx.send(f"❌ Error loading faction sheet: {e}")
+
     @commands.command(name="checkfactiondb")
     @commands.check(is_admin_or_bot_admin)
     async def check_db(self, ctx):
@@ -402,7 +415,7 @@ class FactionProgression(commands.Cog):
     # =================================================================
     # >factionboons
     # =================================================================
-    @commands.command(name="factionboons", aliases=["boons"])
+    @commands.command(name="factionboons", aliases=["boons", "dones"])
     async def faction_boons(self, ctx, code: str):
         try:
             char_info = await resolve_character(code)

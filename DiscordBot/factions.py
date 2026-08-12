@@ -3,6 +3,7 @@ import random
 import re
 import unicodedata
 import io
+import difflib
 from collections import defaultdict
 import discord
 from discord.ext import commands, tasks
@@ -77,6 +78,17 @@ def get_status(percentage: float) -> str | None:
     if percentage <= 90:
         return 'Overwhelming'
     return 'Total control'
+
+STATUS_ORDER = ['Frail', 'Shared', 'Influential', 'Dominant', 'Overwhelming', 'Total control']
+
+def status_change_verb(old_status: str | None, new_status: str) -> str:
+    """'aumentó' if influence went up (or is newly gained), 'bajó' if it dropped."""
+    if old_status is None:
+        return 'aumentó'
+    try:
+        return 'aumentó' if STATUS_ORDER.index(new_status) > STATUS_ORDER.index(old_status) else 'bajó'
+    except ValueError:
+        return 'aumentó'
 
 def faction_sort_key(f):
     return (-f['points'], f['name'])
@@ -216,11 +228,12 @@ class Factions(commands.Cog):
             cache_key = (guild_id, channel_id, f['name'].lower())
             old_status = self._status_cache.get(cache_key)
             if old_status != new_status and new_status is not None:
+                verb = status_change_verb(old_status, new_status)
                 self._status_cache[cache_key] = new_status
                 if channel:
                     try:
                         await channel.send(
-                            f'📢 La influencia de **{f["name"]}** en **{loc_name}** cambió a **{new_status}**'
+                            f'📢 La influencia de **{f["name"]}** en **{loc_name}** {verb} a **{new_status}**'
                         )
                     except Exception:
                         pass
@@ -237,6 +250,7 @@ class Factions(commands.Cog):
         cache_key = (guild_id, channel_id, faction_name.lower())
         old_status = self._status_cache.get(cache_key)
         if old_status != new_status and new_status is not None:
+            verb = status_change_verb(old_status, new_status)
             self._status_cache[cache_key] = new_status
             loc_name = 'esta ubicación'
             try:
@@ -252,7 +266,7 @@ class Factions(commands.Cog):
             if channel:
                 try:
                     await channel.send(
-                        f'📢 La influencia de **{faction_name}** en **{loc_name}** cambió a **{new_status}**'
+                        f'📢 La influencia de **{faction_name}** en **{loc_name}** {verb} a **{new_status}**'
                     )
                 except Exception:
                     pass
@@ -269,21 +283,39 @@ class Factions(commands.Cog):
             return []
         return [{'name': r['faction_name'], 'points': r['points']} for r in (res.data or [])]
 
+    @staticmethod
+    def _fuzzy_resolve_name(raw_name: str, all_names: list[str]) -> str | None:
+        """Resolve a user-typed faction name against the real stored names:
+        exact match, then case-insensitive, then a typo-tolerant fuzzy match."""
+        if not raw_name or not all_names:
+            return None
+        raw = raw_name.strip().lower()
+        lookup = {n.lower(): n for n in all_names}
+        if raw in lookup:
+            return lookup[raw]
+        matches = difflib.get_close_matches(raw, lookup.keys(), n=1, cutoff=0.6)
+        return lookup[matches[0]] if matches else None
+
     async def _get_faction_info(self, guild_id: int, faction_name: str) -> dict | None:
         if not supabase:
             return None
-        res = supabase.table('factions') \
-            .select('*').eq('guild_id', str(guild_id)) \
-            .eq('name', faction_name).maybe_single().execute()
-        if res and res.data:
-            return res.data
+        faction_name = faction_name.strip()
+        try:
+            res = supabase.table('factions') \
+                .select('*').eq('guild_id', str(guild_id)) \
+                .eq('name', faction_name).maybe_single().execute()
+            if res and res.data:
+                return res.data
+        except Exception:
+            pass
         all_res = supabase.table('factions') \
             .select('*').eq('guild_id', str(guild_id)).execute()
-        if all_res and all_res.data:
-            for f in all_res.data:
-                if f['name'].lower() == faction_name.lower():
-                    return f
-        return None
+        all_data = all_res.data if (all_res and all_res.data) else []
+        if not all_data:
+            return None
+        by_name = {f['name']: f for f in all_data}
+        resolved_name = self._fuzzy_resolve_name(faction_name, list(by_name.keys()))
+        return by_name.get(resolved_name) if resolved_name else None
 
     async def _get_all_factions(self, guild_id: int) -> list[dict]:
         if not supabase:
@@ -500,11 +532,11 @@ class Factions(commands.Cog):
             return
 
         all_factions = await self._get_all_factions(ctx.guild.id)
-        valid_names = {f['name'].lower(): f['name'] for f in all_factions}
+        all_names = [f['name'] for f in all_factions]
         invalid = []
         resolved = []
         for name, pts_str in pairs:
-            real_name = valid_names.get(name.strip().lower())
+            real_name = self._fuzzy_resolve_name(name, all_names)
             if not real_name:
                 invalid.append(name.strip())
             else:
