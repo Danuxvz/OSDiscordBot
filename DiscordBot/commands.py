@@ -1,3 +1,4 @@
+import asyncio
 import datetime
 import os
 import json
@@ -9,6 +10,7 @@ from collections import defaultdict
 
 import discord
 from discord.ext import commands
+import requests
 
 from .config import supabase, get_guild_cfg, set_config
 from .utils import get_current_week_start_str, get_current_week_range, get_weekly_log_path, utc_now_iso
@@ -625,6 +627,24 @@ class BotCommands(commands.Cog):
         if tables_cog:
             await tables_cog.reload_tables()
             await ctx.send("✅ Custom tables reloaded.")
+
+    @commands.command(name="testfactionsheet")
+    @commands.has_permissions(administrator=True)
+    async def test_faction_sheet(self, ctx):
+        from .views import FACTION_SHEET_URL, load_sheet
+        try:
+            sheet = await asyncio.to_thread(load_sheet, FACTION_SHEET_URL)
+            if sheet:
+                keys = list(sheet.keys())
+                await ctx.send(f"✅ Faction sheet loaded: {len(keys)} rows.\n"
+                            f"First 10 keys: {keys[:10]}")
+            else:
+                # No rows found – dump raw CSV to see what's wrong
+                resp = await asyncio.to_thread(requests.get, FACTION_SHEET_URL, **{"timeout": 30})
+                text = resp.text[:500]
+                await ctx.send(f"❌ Sheet returned no data. Raw CSV start:\n```\n{text}\n```")
+        except Exception as e:
+            await ctx.send(f"❌ Error: {e}")
 
     @commands.command(aliases=["qc", "create", "weekly", "thread", "new thread"])
     @commands.has_permissions(administrator=True)
