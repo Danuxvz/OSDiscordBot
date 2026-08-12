@@ -602,6 +602,30 @@ class BotCommands(commands.Cog):
         else:
             await ctx.send("⚠️ Failed to refresh items table; check logs.")
 
+        # ── Also reload the faction sheet cache ──
+        try:
+            # Force a fresh fetch by clearing the internal cache
+            from . import views as views_module
+            if hasattr(views_module, '_faction_sheet_cache'):
+                views_module._faction_sheet_cache.clear()
+                print("[REFRESH] Faction sheet cache cleared.")
+            else:
+                # fallback: try a direct attribute clear
+                views_module._faction_sheet_cache = {}
+                print("[REFRESH] Reset faction sheet cache to empty dict.")
+        except Exception as e:
+            print(f"[REFRESH] Could not clear faction cache: {e}")
+
+        # Reload the faction sheet now (this will repopulate the cache)
+        try:
+            sheet = await get_cached_faction_async()
+            if sheet:
+                await ctx.send(f"✅ Faction sheet reloaded ({len(sheet)} entries).")
+            else:
+                await ctx.send("⚠️ Faction sheet reload returned no data.")
+        except Exception as e:
+            await ctx.send(f"❌ Error reloading faction sheet: {e}")
+
         # Also reload dynamic tables (ritual, etc.)
         tables_cog = self.bot.get_cog("Tables")
         if tables_cog:

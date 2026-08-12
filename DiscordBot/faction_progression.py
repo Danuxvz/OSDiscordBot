@@ -288,19 +288,24 @@ class FactionProgression(commands.Cog):
     async def _get_boon_info(self, faction_id: str, letter: str) -> dict:
         try:
             sheet = await get_cached_faction_async()
-            if sheet:
-                key = f"{faction_id.upper()}:{letter.upper()}"
-                row = sheet.get(key)
-                if row:
-                    return {
-                        "title": row.get("title") or row.get("name") or f"Rank {letter}",
-                        "description": row.get("description", ""),
-                        "type": row.get("type", "Unknown"),
-                        "released": row.get("released", "true")
-                    }
+            if not sheet:
+                print("[FactionProgression] _get_boon_info: faction sheet is empty or None!")
+                return {"title": f"Rank {letter}", "description": "Sheet unavailable", "type": "Unknown", "released": "true"}
+
+            key = f"{faction_id.upper()}:{letter.upper()}"
+            row = sheet.get(key)
+            if row:
+                return {
+                    "title": row.get("title") or row.get("name") or f"Rank {letter}",
+                    "description": row.get("description", ""),
+                    "type": row.get("type", "Unknown"),
+                    "released": row.get("released", "true")
+                }
+            else:
+                print(f"[FactionProgression] _get_boon_info: no row for key {key}")
         except Exception as e:
             print(f"[FactionProgression] _get_boon_info error: {e}")
-        return {"title": f"Rank {letter}", "description": "", "type": "Unknown", "released": "true"}
+        return {"title": f"Rank {letter}", "description": "Sheet error", "type": "Unknown", "released": "true"}
 
     async def _check_boon_removal(self, ctx, character_code, faction_id, new_tokens):
         client = get_supabase()
