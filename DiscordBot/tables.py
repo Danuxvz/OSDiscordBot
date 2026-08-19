@@ -5,6 +5,10 @@ import discord
 from discord.ext import commands
 from .config import supabase
 
+# Words that trigger the paginated table view from the dynamic per-table
+# command, e.g. `>mytable list` / `>mytable all` — same effect as `show`.
+TABLE_SHOW_KEYWORDS = {"show", "list", "all", "table", "options"}
+
 class TableView(discord.ui.View):
     """Pagination view for table entries."""
     def __init__(self, table_name: str, entries: list[dict], timeout=120):
@@ -95,7 +99,7 @@ class Tables(commands.Cog):
 
         async def table_handler(ctx: commands.Context, *, args: str = ""):
             args = args.strip().lower()
-            if args == "show":
+            if args in TABLE_SHOW_KEYWORDS:
                 return await self.table_show(ctx, name=table_name)
             entries = await self._get_table_entries(table_name)
             if not entries:

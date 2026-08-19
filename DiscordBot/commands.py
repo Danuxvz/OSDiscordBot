@@ -1082,6 +1082,25 @@ class BotCommands(commands.Cog):
                 return embed, file
             return embed, None
 
+        # Renders an ente's base card exactly the same way whether it's a
+        # real hit or the F404 fallback — F404's row comes from the entes
+        # sheet like any other ente, it's not special-cased data.
+        async def send_ente_card(ente_id, row):
+            name = row.get("name") or "Unknown"
+            element = row.get("elemento") or row.get("element") or "Unknown"
+            embed = discord.Embed(title=ente_id, description=name, color=discord.Color.blurple())
+            embed.add_field(name="Element", value=element)
+            img_path = find_image(ente_id)
+            file = None
+            if img_path:
+                file = discord.File(img_path, filename=os.path.basename(img_path))
+                embed.set_image(url=f"attachment://{os.path.basename(img_path)}")
+            view = EnteView(ente_id)
+            if file:
+                await ctx.send(embed=embed, file=file, view=view)
+            else:
+                await ctx.send(embed=embed, view=view)
+
         if unlock_query:
             full_id = f"{base_id}:{suffix}"
             # 1) Unlock sheet
@@ -1139,27 +1158,23 @@ class BotCommands(commands.Cog):
                         await ctx.send(embed=embed)
                     return
 
+            # The ente itself doesn't exist at all (not just missing this
+            # field) -> show the F404 error card instead of guessing.
+            if base_id not in entes:
+                error_row = entes.get("F404")
+                if error_row:
+                    await send_ente_card("F404", error_row)
+                    return
+
             await ctx.send("❌ Item not found in unlocks.")
             return
 
         # ============ No suffix -> show base item ============
-        # 1) Ente sheet
-        _, row = find_item(entes, base_id)
+        # 1) Ente sheet — exact match only. A nonexistent ente falls through
+        # to the F404 error card below instead of a possibly-wrong fuzzy guess.
+        row = entes.get(base_id)
         if row:
-            name = row.get("name") or "Unknown"
-            element = row.get("elemento") or row.get("element") or "Unknown"
-            embed = discord.Embed(title=base_id, description=name, color=discord.Color.blurple())
-            embed.add_field(name="Element", value=element)
-            img_path = find_image(base_id)
-            file = None
-            if img_path:
-                file = discord.File(img_path, filename=os.path.basename(img_path))
-                embed.set_image(url=f"attachment://{os.path.basename(img_path)}")
-            view = EnteView(base_id)
-            if file:
-                await ctx.send(embed=embed, file=file, view=view)
-            else:
-                await ctx.send(embed=embed, view=view)
+            await send_ente_card(base_id, row)
             return
 
         # 2) Faction base item (e.g., Hexen)
@@ -1191,6 +1206,13 @@ class BotCommands(commands.Cog):
                 else:
                     await ctx.send(embed=embed, view=view)
                 return
+
+        # 3) Not an ente or a faction item — show the F404 "Error" card
+        # instead of guessing what the user meant.
+        error_row = entes.get("F404")
+        if error_row:
+            await send_ente_card("F404", error_row)
+            return
 
         await ctx.send("❌ Item not found.")
 
