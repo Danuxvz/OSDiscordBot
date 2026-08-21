@@ -377,7 +377,7 @@ class BotCommands(commands.Cog):
             desc += f"{barriers}\n"
         desc += (
             f"**Ataque :** {atk}\n"
-            f"**Arma :** {weapon}\n\n"
+            f"**Anrima :** {weapon}\n\n"
             f"**Habilidades pasivas:**\n{passives}\n\n"
             f"**Armor Class**\n{armor}\n\n"
             f"**Stamina :** {stamina}\n"
