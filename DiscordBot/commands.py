@@ -359,10 +359,22 @@ class BotCommands(commands.Cog):
         selected_activa_ids = self._safe_json(row.get("selected_activa_ids"), [])
         active_ae_ids = self._safe_json(row.get("active_ae_ids"), [])
 
+        # If no explicit selection was synced, treat all custom activas as selected.
+        # This prevents NPC custom abilities from disappearing just because the
+        # selected_activa_ids column is empty.
+        if not selected_activa_ids:
+            selected_activa_ids = [
+                a.get("id") for a in custom_activas
+                if isinstance(a, dict) and a.get("id")
+            ]
+
         lines = []
 
         # Custom activas
-        selected_custom = [a for a in custom_activas if a.get("id") in selected_activa_ids]
+        selected_custom = [
+            a for a in custom_activas
+            if isinstance(a, dict) and a.get("id") in selected_activa_ids
+        ]
         for a in selected_custom:
             name = a.get("name") or "Activa"
             text = a.get("text") or ""
