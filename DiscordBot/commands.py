@@ -88,9 +88,8 @@ class RouteEntesView(discord.ui.View):
     async def update_message(self, interaction):
         embeds, files = self.get_page_data()
         await interaction.response.edit_message(embeds=embeds, attachments=files, view=self)
-        # Disable buttons if on first/last page
-        self.children[0].disabled = (self.page == 0) # Previous button
-        self.children[1].disabled = (self.page >= (len(self.items)-1) // self.items_per_page) # Next button
+        self.children[0].disabled = (self.page == 0)
+        self.children[1].disabled = (self.page >= (len(self.items)-1) // self.items_per_page)
         await interaction.followup.edit_message(interaction.message.id, view=self)
 
     @discord.ui.button(label="◀ Previous", style=discord.ButtonStyle.primary)
@@ -106,7 +105,6 @@ class RouteEntesView(discord.ui.View):
             await self.update_message(interaction)
 
     async def on_timeout(self):
-        # Disable buttons when view times out
         for child in self.children:
             child.disabled = True
 
@@ -181,35 +179,39 @@ class BotCommands(commands.Cog):
 
         return ", ".join(parts)
 
-    def _format_passives(self, habilidades):
-        """Format passive abilities, resolving IDs to names and descriptions."""
-        habilidades = self._safe_json(habilidades, [])
-        if not habilidades:
-            return "Ninguna"
+    def _format_passives(self, habilidades, custom_he=None):
+        """Format passive abilities, resolving regular HE IDs and custom HE IDs."""
+        selected_ids = []
+        if isinstance(habilidades, dict):
+            selected_ids = habilidades.get("selectedIds", [])
+        elif isinstance(habilidades, list):
+            selected_ids = habilidades
 
+        custom_map = {c["id"]: c for c in (custom_he or []) if isinstance(c, dict)}
         he_map = self._get_he_map()
         lines = []
-        if isinstance(habilidades, list):
-            for h in habilidades:
-                if isinstance(h, dict):
-                    name = h.get("name") or h.get("title") or "Habilidad"
-                    text = (h.get("text") or h.get("description") or "").strip()
-                else:
-                    # h is likely an ID (string)
-                    he_id_raw = str(h).strip()
-                    he_id_norm = normalize_id(he_id_raw)+":HE"
-                    row = he_map.get(he_id_norm) or he_map.get(he_id_raw)
-                    if row:
-                        name = row["name"]
-                        text = row["description"]
-                    else:
-                        name = "Habilidad"
-                        text = he_id_raw
-                lines.append(f"- *__{name}__*\n{text}")
-        else:
-            lines.append(str(habilidades))
 
-        return "\n".join(lines)
+        for h in selected_ids:
+            h = str(h).strip()
+
+            if h in custom_map:
+                c = custom_map[h]
+                name = c.get("name") or "Habilidad"
+                text = c.get("text") or ""
+                lines.append(f"- *__{name}__*\n{text}")
+                continue
+
+            row = he_map.get(h) or he_map.get(normalize_id(h))
+            if row:
+                name = row["name"]
+                text = row["description"]
+            else:
+                name = "Habilidad"
+                text = h
+
+            lines.append(f"- *__{name}__*\n{text}")
+
+        return "\n".join(lines) if lines else "Ninguna"
 
     def _format_armor(self, armor):
         armor = self._safe_json(armor, {})
@@ -242,7 +244,7 @@ class BotCommands(commands.Cog):
         total_max = base_max + enabled_bonus + temp_bonus + char_temp_bonus
 
         return f"{current}/{total_max}"
-    
+
     def _format_barriers(self, hp):
         hp = self._safe_json(hp, {})
         if not isinstance(hp, dict):
@@ -259,7 +261,6 @@ class BotCommands(commands.Cog):
             amount = b.get("amount", 0)
             if amount is None:
                 continue
-
             lines.append(f"**Barrera {i} :** {amount}")
 
         return "\n".join(lines)
@@ -304,7 +305,6 @@ class BotCommands(commands.Cog):
                         used = len(c.get("usedIndices", []) or [])
                     qty = c.get("quantity", 0) or 0
 
-                    # Add sources/bonuses to max
                     bonus = 0
                     sources = c.get("sources", [])
                     if isinstance(sources, list):
@@ -353,15 +353,79 @@ class BotCommands(commands.Cog):
 
         return "\n".join(lines) if lines else "Ninguna"
 
-    def _build_loadout_description(self, row):
+    def _format_activas(self, row):
+        """Format Habilidades Activas for NPC loadouts."""
+        custom_activas = self._safe_json(row.get("habilidades_activas"), [])
+        selected_activa_ids = self._safe_json(row.get("selected_activa_ids"), [])
+        active_ae_ids = self._safe_json(row.get("active_ae_ids"), [])
+
+        lines = []
+
+        # Custom activas
+        selected_custom = [a for a in custom_activas if a.get("id") in selected_activa_ids]
+        for a in selected_custom:
+            name = a.get("name") or "Activa"
+            text = a.get("text") or ""
+            lines.append(f"- *__{name}__*\n{text}")
+
+        # AE cards
+        he_map = self._get_he_map()
+        for ae_id in active_ae_ids:
+            ae_id_str = str(ae_id).strip()
+            key = f"{ae_id_str}:AE"
+            row_data = he_map.get(key) or he_map.get(normalize_id(key))
+            if row_data:
+                name = row_data["name"]
+                desc = row_data["description"]
+            else:
+                name = ae_id_str
+                desc = ""
+            lines.append(f"- *__{name}__*\n{desc}")
+
+        return "\n".join(lines) if lines else "Ninguna"
+
+    def _build_loadout_description(self, row, is_npc=False):
         hp = self._format_hp(row.get("hp"))
         barriers = self._format_barriers(row.get("hp"))
         atk = self._format_atk(row.get("atk"))
         weapon = self._format_weapon(row.get("weapon"))
-        passives = self._format_passives(row.get("habilidades_pasivas"))
+
+        custom_he = self._safe_json(row.get("custom_he"), [])
+        passives = self._format_passives(row.get("habilidades_pasivas"), custom_he)
+
         armor = self._format_armor(row.get("armor_class"))
-        stamina = self._format_stamina(row.get("slots"))
-        cards = self._format_cards(row.get("slots"))
+
+        if is_npc:
+            activas = self._format_activas(row)
+            desc = (
+                f"**HP :** {hp}\n"
+            )
+            if barriers:
+                desc += f"{barriers}\n"
+            desc += (
+                f"**Ataque :** {atk}\n"
+                f"**Anrima :** {weapon}\n\n"
+                f"**Habilidades pasivas:**\n{passives}\n\n"
+                f"**Armor Class**\n{armor}\n\n"
+                f"**Habilidades Activas:**\n{activas}"
+            )
+        else:
+            stamina = self._format_stamina(row.get("slots"))
+            cards = self._format_cards(row.get("slots"))
+            desc = (
+                f"**HP :** {hp}\n"
+            )
+            if barriers:
+                desc += f"{barriers}\n"
+            desc += (
+                f"**Ataque :** {atk}\n"
+                f"**Anrima :** {weapon}\n\n"
+                f"**Habilidades pasivas:**\n{passives}\n\n"
+                f"**Armor Class**\n{armor}\n\n"
+                f"**Stamina :** {stamina}\n"
+                f"**Cartas :**\n{cards}"
+            )
+
         notes = row.get("notes")
         if isinstance(notes, str):
             notes_text = notes.strip()
@@ -369,20 +433,6 @@ class BotCommands(commands.Cog):
             notes_text = ""
         else:
             notes_text = json.dumps(notes, ensure_ascii=False)
-
-        desc = (
-            f"**HP :** {hp}\n"
-        )
-        if barriers:
-            desc += f"{barriers}\n"
-        desc += (
-            f"**Ataque :** {atk}\n"
-            f"**Anrima :** {weapon}\n\n"
-            f"**Habilidades pasivas:**\n{passives}\n\n"
-            f"**Armor Class**\n{armor}\n\n"
-            f"**Stamina :** {stamina}\n"
-            f"**Cartas :**\n{cards}"
-        )
 
         if notes_text:
             desc += f"\n\n**Notas :**\n{notes_text}"
@@ -400,7 +450,7 @@ class BotCommands(commands.Cog):
 
         char_res = (
             supabase.table("characters")
-            .select("id,user_id,char_name")
+            .select("id,user_id,char_name,external_id")
             .in_("user_id", user_ids)
             .execute()
         )
@@ -431,6 +481,7 @@ class BotCommands(commands.Cog):
             result.append({
                 "character_id": char_id,
                 "character_name": char.get("char_name") or "Unknown",
+                "is_npc": not char.get("external_id"),
                 "loadouts": sorted(grouped.get(char_id, []), key=lambda r: (r.get("name") or "").casefold())
             })
         return sorted(result, key=lambda x: x["character_name"].casefold())
@@ -536,7 +587,7 @@ class BotCommands(commands.Cog):
             return
         set_config(ctx.guild.id, "operations_channel", channel.id)
         await ctx.send(f"✔️ Operations channel set to {channel.mention}.")
-    
+
     @commands.command(aliases=["setdaruma", "darumachannel"])
     @commands.has_permissions(administrator=True)
     async def set_daruma_channel(self, ctx, *, arg=None):
@@ -646,7 +697,7 @@ class BotCommands(commands.Cog):
         await ctx.send(f"✅ Thread created: {thread.mention}")
         await refresh_items_table()
 
-    @commands.command(aliases=["qs","scan"])
+    @commands.command(aliases=["qs", "scan"])
     @commands.has_permissions(administrator=True)
     async def quick_scan(self, ctx):
         cfg = get_guild_cfg(ctx.guild.id)
@@ -656,7 +707,6 @@ class BotCommands(commands.Cog):
         await ctx.send("Running quick scan for this server now...")
         await scan_guild(self.bot, ctx.guild.id, force=True)
         await ctx.send("Quick scan finished.")
-
 
     @commands.command(aliases=["rutas", "availableroutes", "showroutes", "listroutes"])
     async def routes(self, ctx):
@@ -668,7 +718,6 @@ class BotCommands(commands.Cog):
             await ctx.send("No routes found. Run `>refresh_items` first.")
             return
 
-        # Load guild aliases to show them too
         guild_aliases = await load_guild_aliases(str(ctx.guild.id))
         alias_map = get_alias_map(guild_aliases)
         reverse_aliases = {}
@@ -695,7 +744,6 @@ class BotCommands(commands.Cog):
     @commands.command(aliases=["addalias", "routealias", "aliasroute", "aroute", "aalias"])
     @commands.has_permissions(administrator=True)
     async def add_route_alias(self, ctx, canonical: str, *, alias: str):
-        """Add a custom alias for a route. Example: >add_route_alias "Rio Barakawa" "RB" """
         if not supabase:
             await ctx.send("❌ Supabase not configured.")
             return
@@ -721,7 +769,6 @@ class BotCommands(commands.Cog):
     @commands.command(aliases=["removealias", "delalias", "ralias"])
     @commands.has_permissions(administrator=True)
     async def remove_route_alias(self, ctx, *, alias: str):
-        """Remove a custom alias."""
         if not supabase:
             await ctx.send("❌ Supabase not configured.")
             return
@@ -744,36 +791,24 @@ class BotCommands(commands.Cog):
     @commands.command(aliases=["route_items", "route_entelist", "r_entes", "rentes", "rutae", "rutaentes", "entesruta", "routeitems"])
     @commands.has_permissions(administrator=True)
     async def route_entes(self, ctx, *, route_name: str = None):
-        """Show all entes (items) available in a given route, with images. Paginated. Admin only."""
+        if route_name is None:
+            await ctx.send("❌ Uso: `>route_entes <nombre_de_ruta>`\nEjemplo: `>route_entes \"Rio Barakawa\"`")
+            return
+
         try:
-            if route_name is None:
-                await ctx.send("❌ Uso: `>route_entes <nombre_de_ruta>`\nEjemplo: `>route_entes \"Rio Barakawa\"`")
-                return
-
-            print(f"[DEBUG] route_entes called with: {route_name}")
-
             items_table = load_items_table()
             if not items_table:
                 await ctx.send("❌ No items loaded. Run `>refresh_items` first.")
                 return
 
-            print(f"[DEBUG] items_table loaded, number of routes: {len(items_table)}")
-
-            # Resolve route (supports aliases, fuzzy matching)
             canonical_route = await match_route(route_name, items_table, guild_id=ctx.guild.id)
-            print(f"[DEBUG] canonical_route = {canonical_route}")
-
             if not canonical_route:
                 await ctx.send(f"❌ Ruta `{route_name}` no reconocida. Usa `>routes` para ver las rutas disponibles.")
                 return
 
-            # Collect all items from this route, deduplicate by 'id'
             route_data = items_table.get(canonical_route, {})
-            print(f"[DEBUG] route_data keys (tiers): {list(route_data.keys())}")
-
             items_by_id = {}
             for tier, item_list in route_data.items():
-                print(f"[DEBUG] Tier {tier} has {len(item_list)} items")
                 for item in item_list:
                     item_id = item.get("id")
                     if item_id and item_id not in items_by_id:
@@ -789,8 +824,6 @@ class BotCommands(commands.Cog):
                 await ctx.send(f"ℹ️ No se encontraron entes en la ruta **{canonical_route}**.")
                 return
 
-            print(f"[DEBUG] Total unique items: {len(items_by_id)}")
-
             tier_order = {"C": 0, "D": 1, "E": 2}
             sorted_items = sorted(
                 items_by_id.values(),
@@ -799,7 +832,7 @@ class BotCommands(commands.Cog):
 
             view = RouteEntesView(sorted_items, canonical_route)
             embeds, files = view.get_page_data()
-            await ctx.send(embeds=embeds, files=files, view=view)            
+            await ctx.send(embeds=embeds, files=files, view=view)
 
         except Exception as e:
             import traceback
@@ -891,7 +924,6 @@ class BotCommands(commands.Cog):
             ),
             inline=False
         )
-        # ── New section ──
         embed.add_field(
             name="📈 Progresión de Facciones",
             value=(
@@ -1082,9 +1114,6 @@ class BotCommands(commands.Cog):
                 return embed, file
             return embed, None
 
-        # Renders an ente's base card exactly the same way whether it's a
-        # real hit or the F404 fallback — F404's row comes from the entes
-        # sheet like any other ente, it's not special-cased data.
         async def send_ente_card(ente_id, row):
             name = row.get("name") or "Unknown"
             element = row.get("elemento") or row.get("element") or "Unknown"
@@ -1119,12 +1148,7 @@ class BotCommands(commands.Cog):
                         color=discord.Color.orange()
                     )
                 else:
-                    PREFIX_MAP = {
-                        "AE": "ae",
-                        "SB": "stat",
-                        "HE": "he",
-                        "AC": "armor"
-                    }
+                    PREFIX_MAP = {"AE": "ae", "SB": "stat", "HE": "he", "AC": "armor"}
                     emoji_name = PREFIX_MAP.get(suffix, suffix.lower())
                     prefix = discord.utils.get(ctx.guild.emojis, name=emoji_name)
                     prefix_str = str(prefix) if prefix else f"{suffix}:"
@@ -1177,7 +1201,6 @@ class BotCommands(commands.Cog):
             await send_ente_card(base_id, row)
             return
 
-        # 2) Faction base item (e.g., Hexen)
         if faction_data:
             # Collect all entries for this base id
             faction_entries = []
@@ -1254,18 +1277,16 @@ class BotCommands(commands.Cog):
                         return
 
                     if len(only_loadouts) == 1:
-                        # Single loadout -> show it
                         row = only_loadouts[0]
                         embed = discord.Embed(
                             title=row["name"],
-                            description=self._build_loadout_description(row),
+                            description=self._build_loadout_description(row, is_npc=only_char["is_npc"]),
                             color=discord.Color.blurple()
                         )
                         embed.set_footer(text=f"Character: {only_char['character_name']}")
                         await ctx.send(embed=embed)
                         return
 
-                    # Multiple loadouts -> list them
                     embed = discord.Embed(
                         title=f"Loadouts de {only_char['character_name']}",
                         color=discord.Color.gold()
@@ -1274,7 +1295,6 @@ class BotCommands(commands.Cog):
                     await ctx.send(embed=embed)
                     return
 
-                # Multiple characters -> show overview
                 embed = discord.Embed(
                     title="Tus personajes",
                     description="Escribe `>loadout <nombre>` para buscar uno específico.\n"
@@ -1297,10 +1317,7 @@ class BotCommands(commands.Cog):
                 await ctx.send(embed=embed)
                 return
 
-            # ----- With argument: fuzzy search -----
             query = self._norm(name)
-
-            # Try to parse "character / loadout"
             character_query = None
             loadout_query = query
             for sep in [" / ", " | ", " :: ", " - "]:
@@ -1310,7 +1327,6 @@ class BotCommands(commands.Cog):
                     loadout_query = right.strip()
                     break
 
-            # If user gave a character name, try to match that character first
             if character_query:
                 char_matches = difflib.get_close_matches(
                     character_query,
@@ -1328,7 +1344,7 @@ class BotCommands(commands.Cog):
                         row = chosen_char["loadouts"][0]
                         embed = discord.Embed(
                             title=row["name"],
-                            description=self._build_loadout_description(row),
+                            description=self._build_loadout_description(row, is_npc=chosen_char["is_npc"]),
                             color=discord.Color.blurple()
                         )
                         embed.set_footer(text=f"Character: {chosen_char['character_name']}")
@@ -1343,17 +1359,16 @@ class BotCommands(commands.Cog):
                     await ctx.send(embed=embed)
                     return
 
-            # Otherwise fuzzy search all loadouts
             candidates = []
             for entry in grouped:
                 for row in entry["loadouts"]:
                     candidates.append({
                         "character_name": entry["character_name"],
+                        "is_npc": entry["is_npc"],
                         "row": row,
                         "key": self._norm(f"{entry['character_name']} / {row['name']}")
                     })
 
-            # Try direct match on loadout name first
             direct_matches = difflib.get_close_matches(
                 loadout_query,
                 [self._norm(c["row"]["name"]) for c in candidates],
@@ -1367,7 +1382,6 @@ class BotCommands(commands.Cog):
                         chosen = c
                         break
 
-            # If not found, try combined key
             if chosen is None:
                 combined_matches = difflib.get_close_matches(
                     query,
@@ -1385,7 +1399,7 @@ class BotCommands(commands.Cog):
             row = chosen["row"]
             embed = discord.Embed(
                 title=row["name"],
-                description=self._build_loadout_description(row),
+                description=self._build_loadout_description(row, is_npc=chosen["is_npc"]),
                 color=discord.Color.blurple()
             )
             embed.set_footer(text=f"Character: {chosen['character_name']}")
@@ -1401,10 +1415,6 @@ class BotCommands(commands.Cog):
     @commands.command(aliases=["deliveries", "itemlog", "deliverylog", "entregas"])
     @commands.has_permissions(administrator=True)
     async def item_deliveries(self, ctx, limit: int = 50):
-        """
-        Exporta los registros de entrega de ítems (item_deliveries) a un archivo CSV.
-        Uso: >item_deliveries [límite] (por defecto 50, máximo 500)
-        """
         if not supabase:
             await ctx.send("❌ Supabase no está configurado.")
             return
