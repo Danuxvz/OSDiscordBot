@@ -110,13 +110,21 @@ async def count_inventory(bot, channel, ente, character_code, timeout=30):
             return 0
 
         text = extract_text(msg)
+
+        # If RPForge says the item doesn't exist
         if "There is no item with that name" in text:
             return 0
-        m = re.search(r"Target has\s+(\d+)\s*x\s*(\S+)", text)
+
+        # Flexible pattern: matches "N021 has 3x E123J", "Target has 0x E123J", etc.
+        m = re.search(r"\bhas\s+(\d+)\s*x\s*(\S+)", text, re.IGNORECASE)
         if m:
             return int(m.group(1))
-        if "Target has 0x" in text:
+
+        # Fallback for older formats that might use "0x"
+        if "0x" in text:
             return 0
+
+    return 0
 
 def create_daruma_swap_image(source_ente: str, target_ente: str) -> discord.File | None:
     """
