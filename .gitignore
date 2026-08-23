@@ -12,3 +12,7 @@
 /weekly_logs
 /DiscordBot/__pycache__
 /DiscordBot/services/__pycache__
+/DiscordBot/__pycache__/commands.cpython-313.pyc
+/DiscordBot/__pycache__/config.cpython-313.pyc
+/DiscordBot/__pycache__/main.cpython-313.pyc
+/DiscordBot/__pycache__/views.cpython-313.pyc

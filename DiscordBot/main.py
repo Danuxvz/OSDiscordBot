@@ -14,7 +14,7 @@ from DiscordBot.views import preload_caches
 from DiscordBot.faction_progression import FactionProgression
 
 # --------------------------------------------------------------------
-# Daruma queue worker (new)
+# Daruma queue worker
 # --------------------------------------------------------------------
 from DiscordBot.daruma_queue import process_daruma_queue
 
@@ -57,8 +57,10 @@ async def check_weekly_thread_task():
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user}!")
-    await load_config_from_db()
+
+    # In case main() didn't load config (e.g., reload), do a fresh pull.
     await pull_updates_from_db()
+
     # Preload sheet and image caches now so >item is instant
     await preload_caches()
     print("Caches preloaded.")
@@ -68,11 +70,10 @@ async def on_ready():
     check_weekly_thread_task.start()
     scan_busquedas_thread.start()
 
-    # --- Start the Daruma queue worker (new) ---
+    # --- Start the Daruma queue worker ---
     if not getattr(bot, "_daruma_worker_started", False):
         bot._daruma_worker_started = True
         asyncio.create_task(process_daruma_queue(bot))
-    # -------------------------------------------
 
 @bot.event
 async def on_command_error(ctx, error):
@@ -88,6 +89,9 @@ async def on_command_error(ctx, error):
 
 async def main():
     async with bot:
+        # ✅ Load config BEFORE any cog initializes or background loop starts
+        await load_config_from_db()
+
         await bot.add_cog(BotCommands(bot))
         await bot.add_cog(Factions(bot))
         await bot.add_cog(Tables(bot))

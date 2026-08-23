@@ -69,7 +69,7 @@ _image_index = None
 def build_image_index():
     global _image_index
     _image_index = {}
-    for tier in ["E", "D", "C"]:
+    for tier in ["F", "E", "D", "C", "B", "A"]:
         folder = os.path.join(IMAGES_DIR, f"RANK {tier}")
         if not os.path.exists(folder):
             continue
