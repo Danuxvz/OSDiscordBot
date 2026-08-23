@@ -194,6 +194,7 @@ class BotCommands(commands.Cog):
         for h in selected_ids:
             h = str(h).strip()
 
+            # Custom HE check first
             if h in custom_map:
                 c = custom_map[h]
                 name = c.get("name") or "Habilidad"
@@ -201,7 +202,11 @@ class BotCommands(commands.Cog):
                 lines.append(f"- *__{name}__*\n{text}")
                 continue
 
-            row = he_map.get(h) or he_map.get(normalize_id(h))
+            # Standard HE lookup: mimic the old logic by trying ":HE" suffix,
+            # then normalized ID, then raw ID.
+            he_id_norm = normalize_id(h)
+            row = he_map.get(he_id_norm + ":HE") or he_map.get(he_id_norm) or he_map.get(h)
+
             if row:
                 name = row["name"]
                 text = row["description"]
