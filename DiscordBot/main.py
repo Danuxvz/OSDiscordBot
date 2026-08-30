@@ -6,6 +6,7 @@ import os
 
 from DiscordBot.config import supabase, load_config_from_db, config_sync_loop, pull_updates_from_db
 from DiscordBot.commands import BotCommands
+from DiscordBot.loadouts import LoadoutCommands
 from DiscordBot.scanning import check_weekly_thread, scan_guild
 from DiscordBot.items import refresh_items_table
 from DiscordBot.factions import Factions
@@ -25,80 +26,81 @@ intents = discord.Intents.default()
 intents.message_content = True
 
 def get_prefix(bot, message):
-    if message.guild is None:
-        return ">"
-    from DiscordBot.config import get_guild_cfg
-    cfg = get_guild_cfg(message.guild.id)
-    return cfg.get("prefix", ">")
+	if message.guild is None:
+		return ">"
+	from DiscordBot.config import get_guild_cfg
+	cfg = get_guild_cfg(message.guild.id)
+	return cfg.get("prefix", ">")
 
 bot = commands.Bot(command_prefix=get_prefix, intents=intents, case_insensitive=True, help_command=None)
 
 @tasks.loop(minutes=60)
 async def scan_busquedas_thread():
-    from DiscordBot.config import config_cache, get_guild_cfg
-    from DiscordBot.utils import get_local_now
-    now = get_local_now()
-    for gid in list(config_cache.keys()):
-        try:
-            guild_id = int(gid)
-        except:
-            continue
-        cfg = get_guild_cfg(guild_id)
-        scan_hour = cfg.get("scan_hour", 17)
-        if scan_hour is None:
-            continue
-        if now.hour == int(scan_hour):
-            await scan_guild(bot, guild_id, force=False)
+	from DiscordBot.config import config_cache, get_guild_cfg
+	from DiscordBot.utils import get_local_now
+	now = get_local_now()
+	for gid in list(config_cache.keys()):
+		try:
+			guild_id = int(gid)
+		except:
+			continue
+		cfg = get_guild_cfg(guild_id)
+		scan_hour = cfg.get("scan_hour", 17)
+		if scan_hour is None:
+			continue
+		if now.hour == int(scan_hour):
+			await scan_guild(bot, guild_id, force=False)
 
 @tasks.loop(minutes=60)
 async def check_weekly_thread_task():
-    await check_weekly_thread(bot)
+	await check_weekly_thread(bot)
 
 @bot.event
 async def on_ready():
-    print(f"Logged in as {bot.user}!")
+	print(f"Logged in as {bot.user}!")
 
-    # In case main() didn't load config (e.g., reload), do a fresh pull.
-    await pull_updates_from_db()
+	# In case main() didn't load config (e.g., reload), do a fresh pull.
+	await pull_updates_from_db()
 
-    # Preload sheet and image caches now so >item is instant
-    await preload_caches()
-    print("Caches preloaded.")
+	# Preload sheet and image caches now so >item is instant
+	await preload_caches()
+	print("Caches preloaded.")
 
-    # Start background tasks
-    asyncio.create_task(config_sync_loop())
-    check_weekly_thread_task.start()
-    scan_busquedas_thread.start()
+	# Start background tasks
+	asyncio.create_task(config_sync_loop())
+	check_weekly_thread_task.start()
+	scan_busquedas_thread.start()
 
-    # --- Start the Daruma queue worker ---
-    if not getattr(bot, "_daruma_worker_started", False):
-        bot._daruma_worker_started = True
-        asyncio.create_task(process_daruma_queue(bot))
+	# --- Start the Daruma queue worker ---
+	if not getattr(bot, "_daruma_worker_started", False):
+		bot._daruma_worker_started = True
+		asyncio.create_task(process_daruma_queue(bot))
 
 @bot.event
 async def on_command_error(ctx, error):
-    if isinstance(error, commands.MissingPermissions):
-        await ctx.reply("❌ No tienes permisos para usar este comando.", mention_author=False)
-    elif isinstance(error, commands.CheckFailure):
-        await ctx.reply(
-            "❌ Necesitas el rol **Bot Admin** o ser Administrador para usar este comando.",
-            mention_author=False
-        )
-    else:
-        raise error
+	if isinstance(error, commands.MissingPermissions):
+		await ctx.reply("❌ No tienes permisos para usar este comando.", mention_author=False)
+	elif isinstance(error, commands.CheckFailure):
+		await ctx.reply(
+			"❌ Necesitas el rol **Bot Admin** o ser Administrador para usar este comando.",
+			mention_author=False
+		)
+	else:
+		raise error
 
 async def main():
-    async with bot:
-        # ✅ Load config BEFORE any cog initializes or background loop starts
-        await load_config_from_db()
+	async with bot:
+		# ✅ Load config BEFORE any cog initializes or background loop starts
+		await load_config_from_db()
 
-        await bot.add_cog(BotCommands(bot))
-        await bot.add_cog(Factions(bot))
-        await bot.add_cog(Tables(bot))
-        await bot.add_cog(FactionProgression(bot))
-        await bot.start(DISCORD_TOKEN)
+		await bot.add_cog(BotCommands(bot))
+		await bot.add_cog(LoadoutCommands(bot))
+		await bot.add_cog(Factions(bot))
+		await bot.add_cog(Tables(bot))
+		await bot.add_cog(FactionProgression(bot))
+		await bot.start(DISCORD_TOKEN)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+	asyncio.run(main())
 
 # python -m DiscordBot.main

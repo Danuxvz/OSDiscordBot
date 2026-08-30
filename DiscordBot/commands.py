@@ -1,11 +1,9 @@
 import datetime
 import os
 import json
-import difflib
 import re
 import csv
 import io
-from collections import defaultdict
 
 import discord
 from discord.ext import commands
@@ -16,41 +14,11 @@ from .items import refresh_items_table, load_items_table
 from .scanning import scan_guild, check_weekly_thread
 from .routes import VALID_ROUTES, match_route
 from .views import (
-    EnteView, FactionView, find_item, get_cached_faction_async, load_sheet, find_image, UNLOCK_SHEET_URL, ENTE_SHEET_URL, normalize_id,
-    get_cached_unlocks_async, get_cached_entes_async
+    EnteView, FactionView, find_item, get_cached_faction_async, find_image,
+    get_cached_unlocks_async, get_cached_entes_async, normalize_id
 )
-from .routes import VALID_ROUTES, load_guild_aliases, get_alias_map
+from .routes import load_guild_aliases, get_alias_map
 
-# Constants for card display
-CARD_LABELS = {
-    "Basic_Attack": "Ataque básico",
-    "AE_Card": "AE",
-    "Ethrielle": "Ethrielle",
-    "Negociar": "Negociar",
-    "Persuadir": "Persuadir",
-    "Engañar": "Engañar",
-    "Halagar": "Halagar",
-    "Intimidar": "Intimidar",
-    "Interpretar": "Interpretar",
-    "Rogar": "Rogar",
-    "Sobornar": "Sobornar",
-    "Seducir": "Seducir",
-}
-
-CARD_EMOJIS = {
-    "Basic_Attack": "<:basicatk:1279227206157078569>",
-    "AE_Card": "<:ae:1279228009039138836>",
-    "Ethrielle": "<:ethrielle:1279227114213871718>",
-    "Negociar": "<:diplomaticact:1279228077691637760>",
-    "Persuadir": "<:diplomaticact:1279228077691637760>",
-    "Engañar": "<:diplomaticact:1279228077691637760>",
-    "Halagar": "<:diplomaticact:1279228077691637760>",
-    "Intimidar": "<:diplomaticact:1279228077691637760>",
-    "Interpretar": "<:diplomaticact:1279228077691637760>",
-    "Rogar": "<:diplomaticact:1279228077691637760>",
-    "Sobornar": "<:diplomaticact:1279228077691637760>",
-    "Seducir": "<:diplomaticact:1279228077691637760>",
-}
 
 # ----- Pagination View for Route Entes -----
 class RouteEntesView(discord.ui.View):
@@ -62,7 +30,6 @@ class RouteEntesView(discord.ui.View):
         self.items_per_page = 10
 
     def get_page_data(self):
-        """Return (embeds, files) for the current page."""
         start = self.page * self.items_per_page
         end = start + self.items_per_page
         page_items = self.items[start:end]
@@ -108,404 +75,15 @@ class RouteEntesView(discord.ui.View):
         for child in self.children:
             child.disabled = True
 
+
 class BotCommands(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self._he_metadata = None
-
-    # -----------------------------------------------------------------
-    # Helper methods for safe parsing and formatting
-    # -----------------------------------------------------------------
-    def _safe_json(self, value, default):
-        if value is None:
-            return default
-        if isinstance(value, (dict, list, int, float)):
-            return value
-        if isinstance(value, str):
-            text = value.strip()
-            if not text:
-                return default
-            try:
-                return json.loads(text)
-            except Exception:
-                return default
-        return default
-
-    def _norm(self, text):
-        return re.sub(r"\s+", " ", str(text).casefold()).strip()
-
-    def _pretty_card_name(self, card_id: str) -> str:
-        return CARD_LABELS.get(card_id, card_id.replace("_", " ").strip().title())
-
-    def _get_he_map(self):
-        """Load all ente metadata from the unlock sheet and cache it (so any ID can be resolved)."""
-        if self._he_metadata is not None:
-            return self._he_metadata
-        try:
-            entes = load_sheet(UNLOCK_SHEET_URL)
-            he_map = {}
-            for ente_id, row in entes.items():
-                name = row.get("title") or ente_id
-                desc = row.get("description") or "No description"
-                he_map[normalize_id(ente_id)] = {"name": name, "description": desc}
-                he_map[ente_id] = {"name": name, "description": desc}
-            self._he_metadata = he_map
-        except Exception as e:
-            print(f"[HE] Failed to load HE metadata: {e}")
-            self._he_metadata = {}
-        return self._he_metadata
-
-    def _format_weapon(self, weapon):
-        if isinstance(weapon, str):
-            weapon = self._safe_json(weapon, {})
-        if not isinstance(weapon, dict):
-            return str(weapon) if weapon else "Ninguna"
-
-        name = weapon.get("name", "Ninguna")
-        wtype = weapon.get("type")
-        size = weapon.get("size")
-        dmg = weapon.get("damageBonus")
-
-        parts = [name]
-        if wtype:
-            parts.append(str(wtype))
-        if size:
-            if dmg is not None:
-                parts.append(f"{size}({dmg})")
-            else:
-                parts.append(str(size))
-        elif dmg is not None:
-            parts.append(f"({dmg})")
-
-        return ", ".join(parts)
-
-    def _format_passives(self, habilidades, custom_he=None):
-        """Format passive abilities, resolving regular HE IDs and custom HE IDs."""
-        selected_ids = []
-        if isinstance(habilidades, dict):
-            selected_ids = habilidades.get("selectedIds", [])
-        elif isinstance(habilidades, list):
-            selected_ids = habilidades
-
-        custom_map = {c["id"]: c for c in (custom_he or []) if isinstance(c, dict)}
-        he_map = self._get_he_map()
-        lines = []
-
-        for h in selected_ids:
-            h = str(h).strip()
-
-            # Custom HE check first
-            if h in custom_map:
-                c = custom_map[h]
-                name = c.get("name") or "Habilidad"
-                text = c.get("text") or ""
-                lines.append(f"- *__{name}__*\n{text}")
-                continue
-
-            # Standard HE lookup: mimic the old logic by trying ":HE" suffix,
-            # then normalized ID, then raw ID.
-            he_id_norm = normalize_id(h)
-            row = he_map.get(he_id_norm + ":HE") or he_map.get(he_id_norm) or he_map.get(h)
-
-            if row:
-                name = row["name"]
-                text = row["description"]
-            else:
-                name = "Habilidad"
-                text = h
-
-            lines.append(f"- *__{name}__*\n{text}")
-
-        return "\n".join(lines) if lines else "Ninguna"
-
-    def _format_armor(self, armor):
-        armor = self._safe_json(armor, {})
-        if not armor:
-            return "Ninguna"
-        if isinstance(armor, dict):
-            bonus = armor.get("bonus", 0)
-            name = armor.get("name", "")
-            text = (armor.get("text") or "").strip()
-            header = f"[+{bonus}] {name}".strip()
-            return f"{header}\n{text}".strip()
-        return str(armor)
-
-    def _format_hp(self, hp):
-        hp = self._safe_json(hp, {})
-        if not isinstance(hp, dict):
-            return str(hp)
-
-        current = hp.get("baseCurrent", hp.get("current", hp.get("base", hp.get("value", 0))))
-
-        base_max = hp.get("baseMax", 0)
-        sources = hp.get("sources", [])
-        enabled_bonus = 0
-        if isinstance(sources, list):
-            for src in sources:
-                if isinstance(src, dict) and src.get("enabled", True):
-                    enabled_bonus += src.get("bonus", 0) or 0
-        temp_bonus = hp.get("tempBonus", 0) or 0
-        char_temp_bonus = hp.get("characterTempBonus", 0) or 0
-        total_max = base_max + enabled_bonus + temp_bonus + char_temp_bonus
-
-        return f"{current}/{total_max}"
-
-    def _format_barriers(self, hp):
-        hp = self._safe_json(hp, {})
-        if not isinstance(hp, dict):
-            return ""
-
-        barriers = hp.get("barriers", [])
-        if not isinstance(barriers, list) or not barriers:
-            return ""
-
-        lines = []
-        for i, b in enumerate(barriers, start=1):
-            if not isinstance(b, dict):
-                continue
-            amount = b.get("amount", 0)
-            if amount is None:
-                continue
-            lines.append(f"**Barrera {i} :** {amount}")
-
-        return "\n".join(lines)
-
-    def _format_atk(self, atk):
-        atk = self._safe_json(atk, {})
-        if not isinstance(atk, dict):
-            return str(atk)
-
-        if "baseCurrent" in atk or "baseMax" in atk:
-            current = atk.get("baseCurrent", atk.get("current", atk.get("base", 0)))
-            maximum = atk.get("baseMax", atk.get("max", current))
-            return f"{current}/{maximum}"
-
-        base = atk.get("base", 0)
-        temp_bonus = atk.get("tempBonus", 0) or 0
-        char_temp_bonus = atk.get("characterTempBonus", 0) or 0
-        sources = atk.get("sources", [])
-
-        bonus_total = 0
-        if isinstance(sources, list):
-            for src in sources:
-                if isinstance(src, dict) and src.get("enabled", True):
-                    bonus_total += src.get("bonus", 0) or 0
-
-        total = base + temp_bonus + char_temp_bonus + bonus_total
-        return str(total)
-
-    def _format_stamina(self, slots):
-        """Return used/total slots, including card bonuses."""
-        slots = self._safe_json(slots, {})
-        if isinstance(slots, dict):
-            cards = slots.get("cards", [])
-            if isinstance(cards, list) and cards:
-                used_total = 0
-                max_total = 0
-                for c in cards:
-                    if not isinstance(c, dict):
-                        continue
-                    used = c.get("used")
-                    if used is None:
-                        used = len(c.get("usedIndices", []) or [])
-                    qty = c.get("quantity", 0) or 0
-
-                    bonus = 0
-                    sources = c.get("sources", [])
-                    if isinstance(sources, list):
-                        for src in sources:
-                            if isinstance(src, dict) and src.get("enabled", True):
-                                bonus += src.get("bonus", 0) or 0
-
-                    used_total += used
-                    max_total += qty + bonus
-
-                if max_total:
-                    return f"{max_total-used_total}/{max_total}"
-        return "0/0"
-
-    def _format_cards(self, slots):
-        slots = self._safe_json(slots, {})
-        cards = slots.get("cards", [])
-        if not isinstance(cards, list) or not cards:
-            return "Ninguna"
-
-        lines = []
-        for c in cards:
-            if not isinstance(c, dict):
-                continue
-            card_id = c.get("cardId") or c.get("name") or "Unknown"
-            card_name = self._pretty_card_name(card_id)
-            emoji = CARD_EMOJIS.get(card_id, "")
-
-            total = c.get("quantity", 0) or 0
-            used = c.get("used")
-            if used is None:
-                used = len(c.get("usedIndices", []) or [])
-            current = max(total - used, 0)
-
-            bonus = 0
-            sources = c.get("sources", [])
-            if isinstance(sources, list):
-                for src in sources:
-                    if isinstance(src, dict) and src.get("enabled", True):
-                        bonus += src.get("bonus", 0) or 0
-            current += bonus
-            total += bonus
-
-            prefix = f"{emoji} " if emoji else ""
-            lines.append(f"{prefix}{card_name} {current}/{total}")
-
-        return "\n".join(lines) if lines else "Ninguna"
-
-    def _format_activas(self, row):
-        """Format Habilidades Activas for NPC loadouts."""
-        custom_activas = self._safe_json(row.get("habilidades_activas"), [])
-        selected_activa_ids = self._safe_json(row.get("selected_activa_ids"), [])
-        active_ae_ids = self._safe_json(row.get("active_ae_ids"), [])
-
-        # If no explicit selection was synced, treat all custom activas as selected.
-        # This prevents NPC custom abilities from disappearing just because the
-        # selected_activa_ids column is empty.
-        if not selected_activa_ids:
-            selected_activa_ids = [
-                a.get("id") for a in custom_activas
-                if isinstance(a, dict) and a.get("id")
-            ]
-
-        lines = []
-
-        # Custom activas
-        selected_custom = [
-            a for a in custom_activas
-            if isinstance(a, dict) and a.get("id") in selected_activa_ids
-        ]
-        for a in selected_custom:
-            name = a.get("name") or "Activa"
-            text = a.get("text") or ""
-            lines.append(f"- *__{name}__*\n{text}")
-
-        # AE cards
-        he_map = self._get_he_map()
-        for ae_id in active_ae_ids:
-            ae_id_str = str(ae_id).strip()
-            key = f"{ae_id_str}:AE"
-            row_data = he_map.get(key) or he_map.get(normalize_id(key))
-            if row_data:
-                name = row_data["name"]
-                desc = row_data["description"]
-            else:
-                name = ae_id_str
-                desc = ""
-            lines.append(f"- *__{name}__*\n{desc}")
-
-        return "\n".join(lines) if lines else "Ninguna"
-
-    def _build_loadout_description(self, row, is_npc=False):
-        hp = self._format_hp(row.get("hp"))
-        barriers = self._format_barriers(row.get("hp"))
-        atk = self._format_atk(row.get("atk"))
-        weapon = self._format_weapon(row.get("weapon"))
-
-        custom_he = self._safe_json(row.get("custom_he"), [])
-        passives = self._format_passives(row.get("habilidades_pasivas"), custom_he)
-
-        armor = self._format_armor(row.get("armor_class"))
-
-        if is_npc:
-            activas = self._format_activas(row)
-            desc = (
-                f"**HP :** {hp}\n"
-            )
-            if barriers:
-                desc += f"{barriers}\n"
-            desc += (
-                f"**Ataque :** {atk}\n"
-                f"**Anrima :** {weapon}\n\n"
-                f"**Habilidades pasivas:**\n{passives}\n\n"
-                f"**Armor Class**\n{armor}\n\n"
-                f"**Habilidades Activas:**\n{activas}"
-            )
-        else:
-            stamina = self._format_stamina(row.get("slots"))
-            cards = self._format_cards(row.get("slots"))
-            desc = (
-                f"**HP :** {hp}\n"
-            )
-            if barriers:
-                desc += f"{barriers}\n"
-            desc += (
-                f"**Ataque :** {atk}\n"
-                f"**Anrima :** {weapon}\n\n"
-                f"**Habilidades pasivas:**\n{passives}\n\n"
-                f"**Armor Class**\n{armor}\n\n"
-                f"**Stamina :** {stamina}\n"
-                f"**Cartas :**\n{cards}"
-            )
-
-        notes = row.get("notes")
-        if isinstance(notes, str):
-            notes_text = notes.strip()
-        elif notes is None:
-            notes_text = ""
-        else:
-            notes_text = json.dumps(notes, ensure_ascii=False)
-
-        if notes_text:
-            desc += f"\n\n**Notas :**\n{notes_text}"
-
-        return desc[:3900]
-
-    def _get_owned_character_rows(self, discord_id: int):
-        user_res = supabase.table("users").select("id,discord_id").eq("discord_id", discord_id).execute()
-        user_rows = user_res.data or []
-
-        if not user_rows:
-            return []
-
-        user_ids = [row["id"] for row in user_rows]
-
-        char_res = (
-            supabase.table("characters")
-            .select("id,user_id,char_name,external_id")
-            .in_("user_id", user_ids)
-            .execute()
-        )
-        chars = char_res.data or []
-
-        return chars
-
-    def _get_owned_loadouts(self, character_ids):
-        if not character_ids:
-            return []
-
-        res = (
-            supabase.table("loadouts")
-            .select("*")
-            .in_("character_id", character_ids)
-            .execute()
-        )
-        return res.data or []
-
-    def _group_loadouts_by_character(self, characters, loadouts):
-        char_map = {c["id"]: c for c in characters}
-        grouped = defaultdict(list)
-        for row in loadouts:
-            grouped[row["character_id"]].append(row)
-
-        result = []
-        for char_id, char in char_map.items():
-            result.append({
-                "character_id": char_id,
-                "character_name": char.get("char_name") or "Unknown",
-                "is_npc": not char.get("external_id"),
-                "loadouts": sorted(grouped.get(char_id, []), key=lambda r: (r.get("name") or "").casefold())
-            })
-        return sorted(result, key=lambda x: x["character_name"].casefold())
 
     # -----------------------------------------------------------------
     # Commands
     # -----------------------------------------------------------------
+
     @commands.command()
     async def hour(self, ctx):
         from .utils import get_local_now
@@ -519,7 +97,6 @@ class BotCommands(commands.Cog):
     @commands.command(name="mercycheck", aliases=["mcheck"])
     @commands.has_permissions(administrator=True)
     async def mercy_check(self, ctx, codigo: str):
-        """Muestra los streaks de piedad de un personaje (admin)."""
         if not supabase:
             await ctx.send("❌ Supabase not configured.")
             return
@@ -670,7 +247,6 @@ class BotCommands(commands.Cog):
         else:
             await ctx.send("⚠️ Failed to refresh items table; check logs.")
 
-        # Also reload dynamic tables (ritual, etc.)
         tables_cog = self.bot.get_cog("Tables")
         if tables_cog:
             await tables_cog.reload_tables()
@@ -727,7 +303,6 @@ class BotCommands(commands.Cog):
 
     @commands.command(aliases=["rutas", "availableroutes", "showroutes", "listroutes"])
     async def routes(self, ctx):
-        """Show all available routes (canonical names) and their aliases."""
         items_table = load_items_table()
         all_routes = sorted(items_table.keys())
 
@@ -1099,7 +674,6 @@ class BotCommands(commands.Cog):
             suffix = "AE"
             unlock_query = False
 
-        # Load sheets
         try:
             unlocks = await get_cached_unlocks_async()
             entes = await get_cached_entes_async()
@@ -1108,7 +682,6 @@ class BotCommands(commands.Cog):
             await ctx.send(f"❌ Error loading sheet: `{e}`")
             return
 
-        # Helper to build faction embed
         def build_faction_embed(row, full_id):
             title = row.get("title") or row.get("name") or "Unknown"
             desc = row.get("description", "")
@@ -1149,10 +722,8 @@ class BotCommands(commands.Cog):
 
         if unlock_query:
             full_id = f"{base_id}:{suffix}"
-            # 1) Unlock sheet
             row = unlocks.get(full_id)
             if row:
-                # (existing unlock embed code – keep it unchanged from your current version)
                 title = row.get("title") or row.get("name") or "Unknown"
                 desc = row.get("description", "")
                 typ = row.get("type", "Unknown")
@@ -1188,7 +759,6 @@ class BotCommands(commands.Cog):
                     await ctx.send(embed=embed)
                 return
 
-            # 2) Faction sheet
             if faction_data:
                 faction_row = faction_data.get(full_id)
                 if faction_row:
@@ -1199,8 +769,6 @@ class BotCommands(commands.Cog):
                         await ctx.send(embed=embed)
                     return
 
-            # The ente itself doesn't exist at all (not just missing this
-            # field) -> show the F404 error card instead of guessing.
             if base_id not in entes:
                 error_row = entes.get("F404")
                 if error_row:
@@ -1210,16 +778,12 @@ class BotCommands(commands.Cog):
             await ctx.send("❌ Item not found in unlocks.")
             return
 
-        # ============ No suffix -> show base item ============
-        # 1) Ente sheet — exact match only. A nonexistent ente falls through
-        # to the F404 error card below instead of a possibly-wrong fuzzy guess.
         row = entes.get(base_id)
         if row:
             await send_ente_card(base_id, row)
             return
 
         if faction_data:
-            # Collect all entries for this base id
             faction_entries = []
             for k, v in faction_data.items():
                 if k.startswith(base_id + ":"):
@@ -1232,7 +796,6 @@ class BotCommands(commands.Cog):
                         "released": v.get("released", "true")
                     })
             if faction_entries:
-                # Sort by suffix A, B, C, D, E
                 faction_entries.sort(key=lambda e: e["suffix"])
                 embed = discord.Embed(title=base_id, description="Hexen faction item", color=discord.Color.blurple())
                 img_path = find_image(base_id)
@@ -1247,184 +810,12 @@ class BotCommands(commands.Cog):
                     await ctx.send(embed=embed, view=view)
                 return
 
-        # 3) Not an ente or a faction item — show the F404 "Error" card
-        # instead of guessing what the user meant.
         error_row = entes.get("F404")
         if error_row:
             await send_ente_card("F404", error_row)
             return
 
         await ctx.send("❌ Item not found.")
-
-    # -----------------------------------------------------------------
-    # Loadout command
-    # -----------------------------------------------------------------
-    @commands.command(aliases=["loadouts", "lo", "build", "builds", "equip", "equipos", "equipo"])
-    async def loadout(self, ctx, *, name: str = None):
-        """
-        Display a saved loadout.
-        - Without argument: lists all your loadouts per character.
-        - With argument: fuzzy match a loadout name (or character/loadout) and show it.
-        """
-        if not supabase:
-            await ctx.send("❌ Supabase not configured.")
-            return
-
-        discord_id = str(ctx.author.id)
-
-        try:
-            # Get all characters owned by this Discord user
-            characters = self._get_owned_character_rows(discord_id)
-            if not characters:
-                await ctx.send("No characters found for your Discord account.")
-                return
-
-            # Get all loadouts for those characters
-            loadouts = self._get_owned_loadouts([c["id"] for c in characters])
-            grouped = self._group_loadouts_by_character(characters, loadouts)
-
-            # ----- No argument: list all loadouts -----
-            if name is None:
-                if len(grouped) == 1:
-                    only_char = grouped[0]
-                    only_loadouts = only_char["loadouts"]
-
-                    if not only_loadouts:
-                        await ctx.send(f"❌ {only_char['character_name']} has no loadouts.")
-                        return
-
-                    if len(only_loadouts) == 1:
-                        row = only_loadouts[0]
-                        embed = discord.Embed(
-                            title=row["name"],
-                            description=self._build_loadout_description(row, is_npc=only_char["is_npc"]),
-                            color=discord.Color.blurple()
-                        )
-                        embed.set_footer(text=f"Character: {only_char['character_name']}")
-                        await ctx.send(embed=embed)
-                        return
-
-                    embed = discord.Embed(
-                        title=f"Loadouts de {only_char['character_name']}",
-                        color=discord.Color.gold()
-                    )
-                    embed.description = "\n".join(f"• {row['name']}" for row in only_loadouts)
-                    await ctx.send(embed=embed)
-                    return
-
-                embed = discord.Embed(
-                    title="Tus personajes",
-                    description="Escribe `>loadout <nombre>` para buscar uno específico.\n"
-                                "También puedes usar `>loadout <personaje> / <loadout>` si hay nombres parecidos.",
-                    color=discord.Color.gold()
-                )
-                for entry in grouped:
-                    names = entry["loadouts"]
-                    if names:
-                        value = "\n".join(f"• {r['name']}" for r in names[:10])
-                        if len(names) > 10:
-                            value += f"\n... y {len(names) - 10} más."
-                    else:
-                        value = "Sin loadouts."
-                    embed.add_field(
-                        name=entry["character_name"],
-                        value=value[:1024],
-                        inline=False
-                    )
-                await ctx.send(embed=embed)
-                return
-
-            query = self._norm(name)
-            character_query = None
-            loadout_query = query
-            for sep in [" / ", " | ", " :: ", " - "]:
-                if sep in query:
-                    left, right = query.split(sep, 1)
-                    character_query = left.strip()
-                    loadout_query = right.strip()
-                    break
-
-            if character_query:
-                char_matches = difflib.get_close_matches(
-                    character_query,
-                    [self._norm(c["character_name"]) for c in grouped],
-                    n=1,
-                    cutoff=0.55
-                )
-                if char_matches:
-                    chosen_char = next(c for c in grouped if self._norm(c["character_name"]) == char_matches[0])
-                    if not chosen_char["loadouts"]:
-                        await ctx.send(f"❌ {chosen_char['character_name']} has no loadouts.")
-                        return
-
-                    if len(chosen_char["loadouts"]) == 1:
-                        row = chosen_char["loadouts"][0]
-                        embed = discord.Embed(
-                            title=row["name"],
-                            description=self._build_loadout_description(row, is_npc=chosen_char["is_npc"]),
-                            color=discord.Color.blurple()
-                        )
-                        embed.set_footer(text=f"Character: {chosen_char['character_name']}")
-                        await ctx.send(embed=embed)
-                        return
-
-                    embed = discord.Embed(
-                        title=f"Loadouts de {chosen_char['character_name']}",
-                        color=discord.Color.gold()
-                    )
-                    embed.description = "\n".join(f"• {r['name']}" for r in chosen_char["loadouts"])
-                    await ctx.send(embed=embed)
-                    return
-
-            candidates = []
-            for entry in grouped:
-                for row in entry["loadouts"]:
-                    candidates.append({
-                        "character_name": entry["character_name"],
-                        "is_npc": entry["is_npc"],
-                        "row": row,
-                        "key": self._norm(f"{entry['character_name']} / {row['name']}")
-                    })
-
-            direct_matches = difflib.get_close_matches(
-                loadout_query,
-                [self._norm(c["row"]["name"]) for c in candidates],
-                n=1,
-                cutoff=0.45
-            )
-            chosen = None
-            if direct_matches:
-                for c in candidates:
-                    if self._norm(c["row"]["name"]) == direct_matches[0]:
-                        chosen = c
-                        break
-
-            if chosen is None:
-                combined_matches = difflib.get_close_matches(
-                    query,
-                    [c["key"] for c in candidates],
-                    n=1,
-                    cutoff=0.35
-                )
-                if combined_matches:
-                    chosen = next(c for c in candidates if c["key"] == combined_matches[0])
-
-            if not chosen:
-                await ctx.send("No matching loadout found.")
-                return
-
-            row = chosen["row"]
-            embed = discord.Embed(
-                title=row["name"],
-                description=self._build_loadout_description(row, is_npc=chosen["is_npc"]),
-                color=discord.Color.blurple()
-            )
-            embed.set_footer(text=f"Character: {chosen['character_name']}")
-            await ctx.send(embed=embed)
-
-        except Exception as e:
-            await ctx.send(f"❌ Error retrieving loadout: {e}")
-            raise
 
     # -----------------------------------------------------------------
     # Item Deliveries Admin Command
