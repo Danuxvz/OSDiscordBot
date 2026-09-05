@@ -257,32 +257,37 @@ class LoadoutCommands(commands.Cog):
 
     def _format_stamina(self, slots):
         slots = self._safe_json(slots, {})
-        if isinstance(slots, dict):
-            cards = slots.get("cards", [])
-            if isinstance(cards, list) and cards:
-                used_total = 0
-                max_total = 0
-                for c in cards:
-                    if not isinstance(c, dict):
-                        continue
-                    used = c.get("used")
-                    if used is None:
-                        used = len(c.get("usedIndices", []) or [])
-                    qty = c.get("quantity", 0) or 0
+        if not isinstance(slots, dict):
+            return "0/0"
 
-                    bonus = 0
-                    sources = c.get("sources", [])
-                    if isinstance(sources, list):
-                        for src in sources:
-                            if isinstance(src, dict) and src.get("enabled", True):
-                                bonus += src.get("bonus", 0) or 0
+        # Total slot capacity = base + temp + characterTemp + enabled source bonuses
+        base_slots = slots.get("base", 0) or 0
+        temp_bonus = slots.get("tempBonus", 0) or 0
+        char_temp_bonus = slots.get("characterTempBonus", 0) or 0
 
-                    used_total += used
-                    max_total += qty + bonus
+        source_bonus = 0
+        sources = slots.get("sources", [])
+        if isinstance(sources, list):
+            for src in sources:
+                if isinstance(src, dict) and src.get("enabled", True):
+                    source_bonus += src.get("bonus", 0) or 0
 
-                if max_total:
-                    return f"{max_total-used_total}/{max_total}"
-        return "0/0"
+        total_slots = base_slots + temp_bonus + char_temp_bonus + source_bonus
+
+        # Used slots = sum of used cards (used field or length of usedIndices)
+        used_total = 0
+        cards = slots.get("cards", [])
+        if isinstance(cards, list):
+            for c in cards:
+                if not isinstance(c, dict):
+                    continue
+                used = c.get("used")
+                if used is None:
+                    used = len(c.get("usedIndices", []) or [])
+                used_total += used
+
+        available = max(total_slots - used_total, 0)
+        return f"{available}/{total_slots}"
 
     def _format_cards(self, slots):
         slots = self._safe_json(slots, {})
