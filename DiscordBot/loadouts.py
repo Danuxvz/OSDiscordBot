@@ -42,20 +42,6 @@ CARD_EMOJIS = {
 
 REFRESH_EMOJI = "🔄"
 
-# The natural base slot capacity every character starts from.
-# For NPCs, anything above this (plus temp bonuses and slot sources)
-# is treated as extra HP instead of a slot display.
-NATURAL_SLOT_BASE = 10
-
-# Possible key names for bonuses (covers a variety of stored shapes)
-_SLOT_BONUS_KEYS = (
-    "tempBonus",
-    "characterTempBonus",
-    "bonus",
-    "slotBonus",
-    "bonusSlots",
-    "extraSlots",
-)
 _SOURCE_BONUS_KEYS = ("bonus", "amount", "value", "bonusValue")
 
 
@@ -128,6 +114,27 @@ class LoadoutCommands(commands.Cog):
         return self._he_metadata
 
     # -----------------------------------------------------------------
+    # Live character bonus_log access
+    # -----------------------------------------------------------------
+    async def _get_character_bonus_log(self, character_id):
+        """Fetch the live `bonus_log` for a character (None on failure)."""
+        if not supabase or not character_id:
+            return None
+        try:
+            res = supabase.table("characters") \
+                .select("bonus_log") \
+                .eq("id", str(character_id)) \
+                .maybe_single() \
+                .execute()
+            if res is not None and res.data:
+                parsed = self._safe_json(res.data.get("bonus_log"), None)
+                if isinstance(parsed, dict):
+                    return parsed
+        except Exception:
+            pass
+        return None
+
+    # -----------------------------------------------------------------
     # Bonus extraction helpers (used for NPC slot → HP conversion)
     # -----------------------------------------------------------------
     def _extract_bonus_from_sources(self, sources) -> float:
@@ -147,40 +154,51 @@ class LoadoutCommands(commands.Cog):
                     break
         return total
 
-    def _extract_slot_bonus(self, slots) -> float:
+    def _sum_hp_bonus_for_npc(self, hp, character_bonus_log) -> int:
         """
-        Return the total HP bonus that a slots payload represents for an NPC.
-
-        Because NPCs have no slot display, the whole slots stat is converted
-        to HP:
-          - (slots.base - NATURAL_SLOT_BASE), if positive
-          - slots.tempBonus
-          - slots.characterTempBonus
-          - sum of enabled slots.sources bonuses
-
-        This matches the web app, which folds any slot capacity above the
-        natural base (10) into the NPC's HP total.
+        Reproduce the web app's mergeLiveWithSaved logic for HP sources
         """
-        raw = self._safe_json(slots, None)
-        if raw is None:
-            return 0
-        if isinstance(raw, (int, float)):
-            return max(0, float(raw) - NATURAL_SLOT_BASE)
-        if not isinstance(raw, dict):
+        hp = self._safe_json(hp, {})
+        if not isinstance(hp, dict):
             return 0
 
+        saved_sources = hp.get("sources", [])
+        if not isinstance(saved_sources, list):
+            saved_sources = []
+
+        saved_map: dict = {}
+        for s in saved_sources:
+            if isinstance(s, dict):
+                eid = s.get("enteId")
+                if eid:
+                    saved_map[eid] = s
+
+        live_hp: dict = {}
+        if isinstance(character_bonus_log, dict):
+            raw = character_bonus_log.get("hp", {})
+            if isinstance(raw, dict):
+                live_hp = raw
+
+        if live_hp:
+            total = 0
+            for eid, live_bonus in live_hp.items():
+                saved = saved_map.get(eid)
+                enabled = bool(saved.get("enabled", False)) if isinstance(saved, dict) else False
+                if enabled:
+                    try:
+                        total += int(live_bonus or 0)
+                    except (TypeError, ValueError):
+                        pass
+            return total
+
+        # Fallback: no live data, trust the snapshot.
         total = 0
-
-        base = raw.get("base", 0) or 0
-        if isinstance(base, (int, float)):
-            total += max(0, base - NATURAL_SLOT_BASE)
-
-        for key in _SLOT_BONUS_KEYS:
-            v = raw.get(key)
-            if isinstance(v, (int, float)):
-                total += v
-
-        total += self._extract_bonus_from_sources(raw.get("sources", []))
+        for s in saved_sources:
+            if isinstance(s, dict) and s.get("enabled", False):
+                try:
+                    total += int(s.get("bonus", 0) or 0)
+                except (TypeError, ValueError):
+                    pass
         return total
 
     # -----------------------------------------------------------------
@@ -266,7 +284,8 @@ class LoadoutCommands(commands.Cog):
             return f"{header}\n{text}".strip()
         return str(armor)
 
-    def _format_hp(self, hp, slots=None, is_npc=False):
+    def _format_hp(self, hp):
+        """HP for main (non-NPC) characters."""
         hp = self._safe_json(hp, {})
         if not isinstance(hp, dict):
             return str(hp)
@@ -282,10 +301,25 @@ class LoadoutCommands(commands.Cog):
         hp_source_bonus = self._extract_bonus_from_sources(hp.get("sources", []))
 
         total_max = base_max + hp_temp + hp_char_temp + hp_source_bonus
+        return f"{current}/{total_max}"
 
-        if is_npc and slots is not None:
-            total_max += self._extract_slot_bonus(slots)
+    def _format_hp_npc(self, hp, character_bonus_log):
+        """HP for NPCs: same shape as the web app's LoadoutCard totalHP."""
+        hp = self._safe_json(hp, {})
+        if not isinstance(hp, dict):
+            return str(hp)
 
+        current = hp.get(
+            "baseCurrent",
+            hp.get("current", hp.get("base", hp.get("value", 0))),
+        )
+
+        base_max = hp.get("baseMax", 0) or 0
+        hp_temp = hp.get("tempBonus", 0) or 0
+        hp_char_temp = hp.get("characterTempBonus", 0) or 0
+        enabled_hp_bonus = self._sum_hp_bonus_for_npc(hp, character_bonus_log)
+
+        total_max = base_max + hp_temp + hp_char_temp + enabled_hp_bonus
         return f"{current}/{total_max}"
 
     def _format_barriers(self, hp):
@@ -435,9 +469,9 @@ class LoadoutCommands(commands.Cog):
 
         return "\n".join(lines) if lines else "Ninguna"
 
-    def _build_loadout_description(self, row, is_npc=False):
+    def _build_loadout_description(self, row, is_npc=False, character_bonus_log=None):
         if is_npc:
-            hp = self._format_hp(row.get("hp"), slots=row.get("slots"), is_npc=True)
+            hp = self._format_hp_npc(row.get("hp"), character_bonus_log)
         else:
             hp = self._format_hp(row.get("hp"))
 
@@ -539,9 +573,15 @@ class LoadoutCommands(commands.Cog):
     # Helper to send a single loadout and attach refresh reaction
     # -----------------------------------------------------------------
     async def _send_single_loadout(self, ctx, row, is_npc, character_name):
+        character_bonus_log = None
+        if is_npc:
+            character_bonus_log = await self._get_character_bonus_log(row.get("character_id"))
+
         embed = discord.Embed(
             title=row["name"],
-            description=self._build_loadout_description(row, is_npc=is_npc),
+            description=self._build_loadout_description(
+                row, is_npc=is_npc, character_bonus_log=character_bonus_log
+            ),
             color=discord.Color.blurple()
         )
         embed.set_footer(text=f"Character: {character_name}")
@@ -640,9 +680,15 @@ class LoadoutCommands(commands.Cog):
             except Exception:
                 pass
 
+        character_bonus_log = None
+        if mapping["is_npc"]:
+            character_bonus_log = await self._get_character_bonus_log(character_id)
+
         embed = discord.Embed(
             title=row["name"],
-            description=self._build_loadout_description(row, is_npc=mapping["is_npc"]),
+            description=self._build_loadout_description(
+                row, is_npc=mapping["is_npc"], character_bonus_log=character_bonus_log
+            ),
             color=discord.Color.blurple()
         )
         embed.set_footer(text=f"Character: {character_name}")
