@@ -444,7 +444,7 @@ class BotCommands(commands.Cog):
         elementos_path = os.path.join(IMAGES_DIR, "ELEMENTOS_DISCORD.png")
 
         sent_any = False
-        for path in (afinidades_path, elementos_path):
+        for path in (elementos_path, afinidades_path):
             if os.path.exists(path):
                 await ctx.send(file=discord.File(path, filename=os.path.basename(path)))
                 sent_any = True

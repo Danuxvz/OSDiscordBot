@@ -42,6 +42,11 @@ CARD_EMOJIS = {
 
 REFRESH_EMOJI = "🔄"
 
+# The natural base slot capacity every character starts from.
+# For NPCs, anything above this (plus temp bonuses and slot sources)
+# is treated as extra HP instead of a slot display.
+NATURAL_SLOT_BASE = 10
+
 # Possible key names for bonuses (covers a variety of stored shapes)
 _SLOT_BONUS_KEYS = (
     "tempBonus",
@@ -144,25 +149,37 @@ class LoadoutCommands(commands.Cog):
 
     def _extract_slot_bonus(self, slots) -> float:
         """
-        Return the total bonus that a slots payload represents.
-        Handles:
-          - slots as a bare number        -> use the number
-          - slots as a dict with keys     -> sum tempBonus/characterTempBonus/bonus/... + sources
-          - slots as a JSON string        -> parsed then handled as above
+        Return the total HP bonus that a slots payload represents for an NPC.
+
+        Because NPCs have no slot display, the whole slots stat is converted
+        to HP:
+          - (slots.base - NATURAL_SLOT_BASE), if positive
+          - slots.tempBonus
+          - slots.characterTempBonus
+          - sum of enabled slots.sources bonuses
+
+        This matches the web app, which folds any slot capacity above the
+        natural base (10) into the NPC's HP total.
         """
         raw = self._safe_json(slots, None)
         if raw is None:
             return 0
         if isinstance(raw, (int, float)):
-            return float(raw)
+            return max(0, float(raw) - NATURAL_SLOT_BASE)
         if not isinstance(raw, dict):
             return 0
 
         total = 0
+
+        base = raw.get("base", 0) or 0
+        if isinstance(base, (int, float)):
+            total += max(0, base - NATURAL_SLOT_BASE)
+
         for key in _SLOT_BONUS_KEYS:
             v = raw.get(key)
             if isinstance(v, (int, float)):
                 total += v
+
         total += self._extract_bonus_from_sources(raw.get("sources", []))
         return total
 
@@ -250,14 +267,6 @@ class LoadoutCommands(commands.Cog):
         return str(armor)
 
     def _format_hp(self, hp, slots=None, is_npc=False):
-        """
-        Format HP as `current/max`.
-
-        For NPCs, any bonus the slots payload represents (temp bonuses,
-        character temp bonuses, source bonuses, or a bare number) is added
-        to HP max, because NPCs don't have a slot display and the slot
-        bonus is meant to act as extra HP.
-        """
         hp = self._safe_json(hp, {})
         if not isinstance(hp, dict):
             return str(hp)
