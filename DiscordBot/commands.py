@@ -435,7 +435,7 @@ class BotCommands(commands.Cog):
     async def ping(self, ctx):
         await ctx.send("Pong!")
 
-    @commands.command(aliases=["elements", "ventajas", "tipos", "afinidades", "afinity", "elementos"])
+    @commands.command(aliases=["elements", "ventajas", "tipos", "afinidades", "afinity", "elementos", "el"])
     async def element_chart(self, ctx):
         """Muestra las tablas de afinidades y elementos."""
         from .views import IMAGES_DIR
@@ -476,6 +476,7 @@ class BotCommands(commands.Cog):
                 "**item** `código:AE/:SB/:HE/:AC` — Muestra una habilidad específica (ej. `E001:AC`).\n"
                 "**loadout** — Lista tus equipaciones.\n"
                 "**loadout** `nombre` — Muestra una equipación concreta.\n"
+                "**element_chart** — Muestra las tablas de afinidades y elementos.\n"
             ),
             inline=False
         )
