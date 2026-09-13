@@ -435,6 +435,27 @@ class BotCommands(commands.Cog):
     async def ping(self, ctx):
         await ctx.send("Pong!")
 
+    @commands.command(aliases=["elements", "ventajas", "tipos", "afinidades", "afinity", "elementos"])
+    async def element_chart(self, ctx):
+        """Muestra las tablas de afinidades y elementos."""
+        from .views import IMAGES_DIR
+
+        afinidades_path = os.path.join(IMAGES_DIR, "AFINIDADES.png")
+        elementos_path = os.path.join(IMAGES_DIR, "ELEMENTOS_DISCORD.png")
+
+        files = []
+        for path in (afinidades_path, elementos_path):
+            if os.path.exists(path):
+                files.append(discord.File(path, filename=os.path.basename(path)))
+            else:
+                print(f"[ELEMENTS] Missing image: {path}")
+
+        if not files:
+            await ctx.send("❌ No se encontraron las imágenes de afinidades/elementos.")
+            return
+
+        await ctx.send(files=files)    
+
     @commands.command(aliases=["ficha", "personajes", "admisitrador", "web", "app"])
     async def webapp(self, ctx):
         await ctx.send("**Accede a la ficha web atravez de este sospechoso enlace:** https://osinventory-c3a0cbd8ekbzfne8.chilecentral-01.azurewebsites.net")

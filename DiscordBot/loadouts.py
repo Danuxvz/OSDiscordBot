@@ -72,7 +72,7 @@ class LoadoutCommands(commands.Cog):
             pass
 
     # -----------------------------------------------------------------
-    # Helpers (unchanged)
+    # Helpers
     # -----------------------------------------------------------------
     def _safe_json(self, value, default):
         if value is None:
@@ -191,7 +191,7 @@ class LoadoutCommands(commands.Cog):
             return f"{header}\n{text}".strip()
         return str(armor)
 
-    def _format_hp(self, hp):
+    def _format_hp(self, hp, slots=None, is_npc=False):
         hp = self._safe_json(hp, {})
         if not isinstance(hp, dict):
             return str(hp)
@@ -208,6 +208,21 @@ class LoadoutCommands(commands.Cog):
         temp_bonus = hp.get("tempBonus", 0) or 0
         char_temp_bonus = hp.get("characterTempBonus", 0) or 0
         total_max = base_max + enabled_bonus + temp_bonus + char_temp_bonus
+
+        # For NPCs, add the slot bonuses to HP max (base slot capacity is ignored,
+        # only the temporary / source bonuses are treated as HP bonus).
+        if is_npc and slots:
+            slots = self._safe_json(slots, {})
+            if isinstance(slots, dict):
+                slot_temp = slots.get("tempBonus", 0) or 0
+                slot_char_temp = slots.get("characterTempBonus", 0) or 0
+                slot_source_bonus = 0
+                slot_sources = slots.get("sources", [])
+                if isinstance(slot_sources, list):
+                    for src in slot_sources:
+                        if isinstance(src, dict) and src.get("enabled", True):
+                            slot_source_bonus += src.get("bonus", 0) or 0
+                total_max += slot_temp + slot_char_temp + slot_source_bonus
 
         return f"{current}/{total_max}"
 
@@ -260,7 +275,6 @@ class LoadoutCommands(commands.Cog):
         if not isinstance(slots, dict):
             return "0/0"
 
-        # Total slot capacity = base + temp + characterTemp + enabled source bonuses
         base_slots = slots.get("base", 0) or 0
         temp_bonus = slots.get("tempBonus", 0) or 0
         char_temp_bonus = slots.get("characterTempBonus", 0) or 0
@@ -274,7 +288,6 @@ class LoadoutCommands(commands.Cog):
 
         total_slots = base_slots + temp_bonus + char_temp_bonus + source_bonus
 
-        # Used slots = sum of used cards (used field or length of usedIndices)
         used_total = 0
         cards = slots.get("cards", [])
         if isinstance(cards, list):
@@ -361,7 +374,12 @@ class LoadoutCommands(commands.Cog):
         return "\n".join(lines) if lines else "Ninguna"
 
     def _build_loadout_description(self, row, is_npc=False):
-        hp = self._format_hp(row.get("hp"))
+        # ---- HP: for NPCs, slot bonuses count as HP bonus ----
+        if is_npc:
+            hp = self._format_hp(row.get("hp"), slots=row.get("slots"), is_npc=True)
+        else:
+            hp = self._format_hp(row.get("hp"))
+
         barriers = self._format_barriers(row.get("hp"))
         atk = self._format_atk(row.get("atk"))
         weapon = self._format_weapon(row.get("weapon"))
@@ -590,7 +608,6 @@ class LoadoutCommands(commands.Cog):
             await ctx.send("❌ Number to keep must be positive.")
             return
 
-        # Sort message IDs descending (newest first) and keep the top `keep`
         sorted_ids = sorted(self._loadout_messages.keys(), reverse=True)
         ids_to_remove = sorted_ids[keep:]
 
@@ -598,11 +615,9 @@ class LoadoutCommands(commands.Cog):
             await ctx.send(f"ℹ️ Only {len(sorted_ids)} entries; nothing to prune.")
             return
 
-        # Remove from memory
         for mid in ids_to_remove:
             self._loadout_messages.pop(mid, None)
 
-        # Remove from Supabase
         try:
             supabase.table("loadout_messages").delete().in_("message_id", ids_to_remove).execute()
         except Exception as e:
@@ -612,7 +627,7 @@ class LoadoutCommands(commands.Cog):
         await ctx.send(f"✅ Pruned {len(ids_to_remove)} entries. Kept {len(self._loadout_messages)} most recent.")
 
     # -----------------------------------------------------------------
-    # Loadout command (unchanged)
+    # Loadout command
     # -----------------------------------------------------------------
     @commands.command(aliases=["loadouts", "lo", "build", "builds", "equip", "equipos", "equipo"])
     async def loadout(self, ctx, *, name: str = None):
