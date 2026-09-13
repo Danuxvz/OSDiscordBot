@@ -42,6 +42,17 @@ CARD_EMOJIS = {
 
 REFRESH_EMOJI = "🔄"
 
+# Possible key names for bonuses (covers a variety of stored shapes)
+_SLOT_BONUS_KEYS = (
+    "tempBonus",
+    "characterTempBonus",
+    "bonus",
+    "slotBonus",
+    "bonusSlots",
+    "extraSlots",
+)
+_SOURCE_BONUS_KEYS = ("bonus", "amount", "value", "bonusValue")
+
 
 class LoadoutCommands(commands.Cog):
     def __init__(self, bot):
@@ -111,6 +122,53 @@ class LoadoutCommands(commands.Cog):
             self._he_metadata = {}
         return self._he_metadata
 
+    # -----------------------------------------------------------------
+    # Bonus extraction helpers (used for NPC slot → HP conversion)
+    # -----------------------------------------------------------------
+    def _extract_bonus_from_sources(self, sources) -> float:
+        """Sum the enabled bonuses of a sources list, trying several key names."""
+        if not isinstance(sources, list):
+            return 0
+        total = 0
+        for src in sources:
+            if not isinstance(src, dict):
+                continue
+            if not src.get("enabled", True):
+                continue
+            for key in _SOURCE_BONUS_KEYS:
+                v = src.get(key)
+                if isinstance(v, (int, float)):
+                    total += v
+                    break
+        return total
+
+    def _extract_slot_bonus(self, slots) -> float:
+        """
+        Return the total bonus that a slots payload represents.
+        Handles:
+          - slots as a bare number        -> use the number
+          - slots as a dict with keys     -> sum tempBonus/characterTempBonus/bonus/... + sources
+          - slots as a JSON string        -> parsed then handled as above
+        """
+        raw = self._safe_json(slots, None)
+        if raw is None:
+            return 0
+        if isinstance(raw, (int, float)):
+            return float(raw)
+        if not isinstance(raw, dict):
+            return 0
+
+        total = 0
+        for key in _SLOT_BONUS_KEYS:
+            v = raw.get(key)
+            if isinstance(v, (int, float)):
+                total += v
+        total += self._extract_bonus_from_sources(raw.get("sources", []))
+        return total
+
+    # -----------------------------------------------------------------
+    # Formatting helpers
+    # -----------------------------------------------------------------
     def _format_weapon(self, weapon):
         if isinstance(weapon, str):
             weapon = self._safe_json(weapon, {})
@@ -192,37 +250,32 @@ class LoadoutCommands(commands.Cog):
         return str(armor)
 
     def _format_hp(self, hp, slots=None, is_npc=False):
+        """
+        Format HP as `current/max`.
+
+        For NPCs, any bonus the slots payload represents (temp bonuses,
+        character temp bonuses, source bonuses, or a bare number) is added
+        to HP max, because NPCs don't have a slot display and the slot
+        bonus is meant to act as extra HP.
+        """
         hp = self._safe_json(hp, {})
         if not isinstance(hp, dict):
             return str(hp)
 
-        current = hp.get("baseCurrent", hp.get("current", hp.get("base", hp.get("value", 0))))
+        current = hp.get(
+            "baseCurrent",
+            hp.get("current", hp.get("base", hp.get("value", 0))),
+        )
 
-        base_max = hp.get("baseMax", 0)
-        sources = hp.get("sources", [])
-        enabled_bonus = 0
-        if isinstance(sources, list):
-            for src in sources:
-                if isinstance(src, dict) and src.get("enabled", True):
-                    enabled_bonus += src.get("bonus", 0) or 0
-        temp_bonus = hp.get("tempBonus", 0) or 0
-        char_temp_bonus = hp.get("characterTempBonus", 0) or 0
-        total_max = base_max + enabled_bonus + temp_bonus + char_temp_bonus
+        base_max = hp.get("baseMax", 0) or 0
+        hp_temp = hp.get("tempBonus", 0) or 0
+        hp_char_temp = hp.get("characterTempBonus", 0) or 0
+        hp_source_bonus = self._extract_bonus_from_sources(hp.get("sources", []))
 
-        # For NPCs, add the slot bonuses to HP max (base slot capacity is ignored,
-        # only the temporary / source bonuses are treated as HP bonus).
-        if is_npc and slots:
-            slots = self._safe_json(slots, {})
-            if isinstance(slots, dict):
-                slot_temp = slots.get("tempBonus", 0) or 0
-                slot_char_temp = slots.get("characterTempBonus", 0) or 0
-                slot_source_bonus = 0
-                slot_sources = slots.get("sources", [])
-                if isinstance(slot_sources, list):
-                    for src in slot_sources:
-                        if isinstance(src, dict) and src.get("enabled", True):
-                            slot_source_bonus += src.get("bonus", 0) or 0
-                total_max += slot_temp + slot_char_temp + slot_source_bonus
+        total_max = base_max + hp_temp + hp_char_temp + hp_source_bonus
+
+        if is_npc and slots is not None:
+            total_max += self._extract_slot_bonus(slots)
 
         return f"{current}/{total_max}"
 
@@ -374,7 +427,6 @@ class LoadoutCommands(commands.Cog):
         return "\n".join(lines) if lines else "Ninguna"
 
     def _build_loadout_description(self, row, is_npc=False):
-        # ---- HP: for NPCs, slot bonuses count as HP bonus ----
         if is_npc:
             hp = self._format_hp(row.get("hp"), slots=row.get("slots"), is_npc=True)
         else:
@@ -543,7 +595,6 @@ class LoadoutCommands(commands.Cog):
         except (discord.Forbidden, discord.HTTPException):
             return
 
-        # Remove the user's reaction if possible
         user = self.bot.get_user(payload.user_id) or await self.bot.fetch_user(payload.user_id)
         if user:
             try:
@@ -551,7 +602,6 @@ class LoadoutCommands(commands.Cog):
             except (discord.Forbidden, discord.HTTPException):
                 pass
 
-        # Fetch fresh loadout data
         loadout_id = mapping["loadout_id"]
         try:
             res = supabase.table("loadouts").select("*").eq("id", loadout_id).maybe_single().execute()
@@ -570,7 +620,6 @@ class LoadoutCommands(commands.Cog):
                     pass
             return
 
-        # Get character name for footer
         character_id = mapping.get("character_id")
         character_name = "Unknown"
         if character_id:
@@ -600,7 +649,6 @@ class LoadoutCommands(commands.Cog):
     @commands.command(name="pruneloadoutlisteners", aliases=["pruneloadouts", "clearloadoutlisteners", "clearloadouts"])
     @commands.has_permissions(administrator=True)
     async def prune_loadout_listeners(self, ctx, keep: int = 50):
-        """Keep only the most recent `keep` loadout refresh listeners (default 50)."""
         if not supabase:
             await ctx.send("❌ Supabase not configured.")
             return

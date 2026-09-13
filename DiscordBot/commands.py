@@ -437,24 +437,22 @@ class BotCommands(commands.Cog):
 
     @commands.command(aliases=["elements", "ventajas", "tipos", "afinidades", "afinity", "elementos", "el"])
     async def element_chart(self, ctx):
-        """Muestra las tablas de afinidades y elementos."""
+        """Muestra las tablas de afinidades y elementos (una imagen por mensaje)."""
         from .views import IMAGES_DIR
 
         afinidades_path = os.path.join(IMAGES_DIR, "AFINIDADES.png")
         elementos_path = os.path.join(IMAGES_DIR, "ELEMENTOS_DISCORD.png")
 
-        files = []
+        sent_any = False
         for path in (afinidades_path, elementos_path):
             if os.path.exists(path):
-                files.append(discord.File(path, filename=os.path.basename(path)))
+                await ctx.send(file=discord.File(path, filename=os.path.basename(path)))
+                sent_any = True
             else:
                 print(f"[ELEMENTS] Missing image: {path}")
 
-        if not files:
+        if not sent_any:
             await ctx.send("❌ No se encontraron las imágenes de afinidades/elementos.")
-            return
-
-        await ctx.send(files=files)    
 
     @commands.command(aliases=["ficha", "personajes", "admisitrador", "web", "app"])
     async def webapp(self, ctx):
