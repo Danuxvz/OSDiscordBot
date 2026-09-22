@@ -564,27 +564,36 @@ class Factions(commands.Cog):
             await ctx.send(f'❌ Error: {e}')
 
     # -------------------------------------------------------------------
-    # >factions points [#canal] [Faction +/-n]
+    # >factions points [#canal] [Faction1+4 Faction2-4 ...]
+    #
+    # Accepts any number of signed deltas in one call. The first token may
+    # optionally be a channel reference; if not, the current channel is used.
+    #
+    # Examples:
+    #   >factions points                          → show current points
+    #   >factions points #channel                 → show points for #channel
+    #   >factions points Carnaval+4               → +4 Carnaval here
+    #   >factions points #ch Carnaval+4 Hexen-4   → +4 Carnaval, -4 Hexen
+    #   >factions points Carnaval +4 Hexen -4     → spaces between name/delta OK
     # -------------------------------------------------------------------
     @factions_group.command(name='points')
     @commands.check(is_admin_or_bot_admin)
-    async def factions_points(self, ctx: commands.Context, arg1: str = None, arg2: str = None, arg3: str = None):
+    async def factions_points(self, ctx: commands.Context, *, args: str = None):
         channel = ctx.channel
-        faction_name = None
-        delta_str = None
 
-        ch = self._resolve_channel(ctx, arg1) if arg1 else None
-        if ch:
-            channel = ch
-            if arg2 and arg3:
-                faction_name = arg2.strip()
-                delta_str = arg3.strip()
+        # If the first token resolves to a channel, consume it and keep the rest.
+        if args and args.strip():
+            args = args.strip()
+            first_token, _, rest = args.partition(' ')
+            maybe_ch = self._resolve_channel(ctx, first_token)
+            if maybe_ch:
+                channel = maybe_ch
+                args = rest.strip()
         else:
-            if arg1:
-                faction_name = arg1.strip()
-                delta_str = arg2.strip() if arg2 else None
+            args = ""
 
-        if not faction_name and not delta_str:
+        # No deltas given → just show current points for the channel.
+        if not args:
             points_data = await self._get_channel_points(ctx.guild.id, channel.id)
             if not points_data:
                 await ctx.send(f'ℹ️ No hay puntos de facciones en {channel.mention}.')
@@ -598,47 +607,73 @@ class Factions(commands.Cog):
             await ctx.send(embed=embed)
             return
 
-        if not faction_name or not delta_str:
-            await ctx.send('❌ Uso: `>factions points [canal] [Facción +/-cantidad]`')
+        # Parse one or more "name+delta" / "name -delta" pairs.
+        # Faction names are single-word ([A-Za-z][A-Za-z0-9_]*); the delta
+        # must carry an explicit sign so bare names aren't swallowed.
+        pairs = re.findall(r'([A-Za-z][A-Za-z0-9_]*)\s*([+-]\d+)', args)
+        if not pairs:
+            await ctx.send(
+                '❌ Formato inválido.\n'
+                'Ej: `>factions points #canal Carnaval+4 Hexen-4`\n'
+                'También puedes usar: `>factions points Carnaval+4` (usa el canal actual).'
+            )
             return
 
-        info = await self._get_faction_info(ctx.guild.id, faction_name)
-        if not info:
-            await ctx.send(f'❌ Facción **{faction_name}** no existe.')
+        all_factions = await self._get_all_factions(ctx.guild.id)
+        all_names = [f['name'] for f in all_factions]
+
+        resolved = []
+        invalid = []
+        for name, delta_str in pairs:
+            real_name = self._fuzzy_resolve_name(name, all_names)
+            if not real_name:
+                invalid.append(name)
+            else:
+                resolved.append((real_name, int(delta_str)))
+
+        if invalid:
+            await ctx.send(
+                f'❌ Las siguientes facciones no existen: {", ".join(invalid)}\n'
+                f'Usa `>factions create <nombre>` primero.'
+            )
             return
-        real_name = info['name']
 
-        try:
-            delta = int(delta_str)
-        except ValueError:
-            await ctx.send('❌ La cantidad debe ser un número entero (ej: +10, -5).')
+        if not resolved:
+            await ctx.send('❌ No se encontraron facciones válidas.')
             return
 
-        current = 0
-        if supabase:
-            res = supabase.table('faction_points') \
-                .select('points') \
-                .eq('guild_id', str(ctx.guild.id)) \
-                .eq('channel_id', str(channel.id)) \
-                .eq('faction_name', real_name) \
-                .maybe_single().execute()
-            if res and res.data:
-                current = res.data['points']
+        lines = []
+        for real_name, delta in resolved:
+            current = 0
+            if supabase:
+                res = supabase.table('faction_points') \
+                    .select('points') \
+                    .eq('guild_id', str(ctx.guild.id)) \
+                    .eq('channel_id', str(channel.id)) \
+                    .eq('faction_name', real_name) \
+                    .maybe_single().execute()
+                if res and res.data:
+                    current = res.data['points']
 
-        new_pts = max(0, current + delta)
+            new_pts = max(0, current + delta)
 
-        try:
-            supabase.table('faction_points').upsert({
-                'guild_id': str(ctx.guild.id),
-                'channel_id': str(channel.id),
-                'faction_name': real_name,
-                'points': new_pts,
-                'updated_at': utc_now_iso()
-            }, on_conflict='guild_id,channel_id,faction_name').execute()
-            await ctx.send(f'✅ **{real_name}**: {current} → {new_pts} pts en {channel.mention}')
+            try:
+                supabase.table('faction_points').upsert({
+                    'guild_id': str(ctx.guild.id),
+                    'channel_id': str(channel.id),
+                    'faction_name': real_name,
+                    'points': new_pts,
+                    'updated_at': utc_now_iso()
+                }, on_conflict='guild_id,channel_id,faction_name').execute()
+                sign = '+' if delta >= 0 else ''
+                lines.append(f'✅ **{real_name}**: {current} → {new_pts} pts ({sign}{delta})')
+            except Exception as e:
+                lines.append(f'❌ **{real_name}**: Error – {e}')
+
+        await ctx.send(f'📊 Puntos actualizados en {channel.mention}:\n' + '\n'.join(lines))
+
+        for real_name, _ in resolved:
             await self._check_status_change(ctx.guild.id, channel.id, real_name)
-        except Exception as e:
-            await ctx.send(f'❌ Error: {e}')
 
     # -------------------------------------------------------------------
     # >factions location / loc [channel]

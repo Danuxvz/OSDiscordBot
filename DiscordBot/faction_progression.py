@@ -456,11 +456,19 @@ class FactionProgression(commands.Cog):
             await ctx.send(f"❌ Error: {e}")
 
     # =================================================================
-    # Unified faction command handler (with --force detection)
+    # Unified faction command handler
+    #   >hexen                          → show faction info
+    #   >hexen H001                     → show one character's progress
+    #   >hexen H001 +5                  → give 5 tokens to one character
+    #   >hexen H001 H002 H003 +1        → give 1 token to each of 3 chars
+    #   >hexen H001 H002 -3             → remove 3 tokens from each
+    #   >hexen H001 H002 +5 --force     → grant, bypassing rank-up cap
     # =================================================================
     async def _faction_command(self, ctx, faction_id: str, args: str = ""):
         try:
             parts = args.strip().split()
+
+            # ----- No args → show the faction info embed -----
             if len(parts) == 0:
                 embed, view = await build_faction_info_embed_and_view(ctx, faction_id)
                 if view:
@@ -469,15 +477,39 @@ class FactionProgression(commands.Cog):
                     await ctx.send(embed=embed)
                 return
 
-            # Check for --force flag
+            # ----- Optional --force flag (must be last token) -----
             force = False
             if parts[-1].lower() == "--force":
                 force = True
                 parts = parts[:-1]
 
-            code = parts[0].upper().strip()
+            if not parts:
+                embed, view = await build_faction_info_embed_and_view(ctx, faction_id)
+                if view:
+                    await ctx.send(embed=embed, view=view)
+                else:
+                    await ctx.send(embed=embed)
+                return
 
-            if len(parts) == 1:
+            # ----- Delta is the last token, if it looks like +N / -N -----
+            delta = None
+            if re.match(r'^[+-]\d+$', parts[-1]):
+                try:
+                    delta = int(parts[-1])
+                    codes = parts[:-1]
+                except ValueError:
+                    delta = None
+                    codes = parts
+            else:
+                codes = parts
+
+            if not codes:
+                await ctx.send("❌ Debes especificar al menos un código de personaje.")
+                return
+
+            # ----- Single code, no delta → show that character's progress -----
+            if len(codes) == 1 and delta is None:
+                code = codes[0].upper().strip()
                 char_info = await resolve_character(code)
                 if not char_info:
                     await ctx.send("❌ Personaje no encontrado.")
@@ -501,6 +533,7 @@ class FactionProgression(commands.Cog):
                 except Exception as e:
                     await ctx.send(f"❌ Error de base de datos: {e}")
                     return
+
                 client = get_supabase()
                 boons_res = client.table("character_boons") \
                     .select("boon_key") \
@@ -534,29 +567,42 @@ class FactionProgression(commands.Cog):
                 await ctx.send(embed=embed)
                 return
 
-            if len(parts) >= 2:
-                if not is_admin_or_bot_admin(ctx):
-                    await ctx.send("❌ Solo los administradores pueden modificar tokens.")
-                    return
-                try:
-                    delta = int(parts[1])
-                except ValueError:
-                    await ctx.send("❌ El segundo argumento debe ser un número con signo (ej. +5 o -3).")
-                    return
+            # ----- Multiple codes but no delta → refuse -----
+            if delta is None:
+                await ctx.send(
+                    "❌ Falta el delta (`+N` o `-N`).\n"
+                    "Ej: `>hexen H001 H002 H003 +1`"
+                )
+                return
 
+            # ----- Modifying tokens requires admin -----
+            if not is_admin_or_bot_admin(ctx):
+                await ctx.send("❌ Solo los administradores pueden modificar tokens.")
+                return
+
+            if delta == 0:
+                await ctx.send("ℹ️ Delta es 0, no se realizaron cambios.")
+                return
+
+            # ----- Loop over every code and apply the same delta -----
+            for raw_code in codes:
+                code = raw_code.upper().strip()
                 char_info = await resolve_character(code)
                 if not char_info:
-                    await ctx.send("❌ Personaje no encontrado.")
-                    return
+                    await ctx.send(f"❌ Personaje `{code}` no encontrado.")
+                    continue
+
                 char_code, discord_id, _ = char_info
 
                 if delta > 0:
-                    await self._give_faction_tokens(ctx, faction_id, delta, char_code, discord_id, force=force)
-                elif delta < 0:
-                    await self._remove_faction_tokens(ctx, faction_id, abs(delta), char_code)
+                    await self._give_faction_tokens(
+                        ctx, faction_id, delta, char_code,
+                        discord_id, force=force
+                    )
                 else:
-                    await ctx.send("ℹ️ Delta es 0, no se realizaron cambios.")
-                return
+                    await self._remove_faction_tokens(
+                        ctx, faction_id, abs(delta), char_code
+                    )
 
         except Exception as e:
             print(f"[FactionProgression] _faction_command error: {e}")
