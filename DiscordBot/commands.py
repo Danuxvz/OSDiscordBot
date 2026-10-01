@@ -238,6 +238,144 @@ class BotCommands(commands.Cog):
             "🛑 Daily scan turned off." if val is None else f"✔️ Daily scan set to **{val}:00**."
         )
 
+    # -----------------------------------------------------------------
+    # >rankrate — global rank spawn-rate configuration
+    # -----------------------------------------------------------------
+    @commands.command(name="rankrate", aliases=["rankrates", "rr"])
+    @commands.has_permissions(administrator=True)
+    async def rank_rate(self, ctx, *, args: str = ""):
+        """View / edit the global ente rank spawn rates (not per-guild).
+
+        Usage:
+          >rankrate                          → show current rates
+          >rankrate set <E|D|C> <value>      → change a base rate
+          >rankrate october <multiplier>     → set the October D multiplier
+          >rankrate reset                    → restore defaults
+        """
+        from .scanning import (
+            get_rank_rate_config,
+            get_effective_rank_rates,
+            DEFAULT_RANK_RATES,
+            DEFAULT_OCTOBER_D_MULT,
+            GLOBAL_CONFIG_ID,
+        )
+
+        args = args.strip()
+        parts = args.split()
+
+        # ---- No args (or explicit "show") → display ----
+        if not args or parts[0].lower() in ("show", "list", "view"):
+            cfg = get_rank_rate_config()
+            base = cfg["rates"]
+            effective = get_effective_rank_rates()
+            mult = cfg.get("october_d_multiplier", DEFAULT_OCTOBER_D_MULT)
+
+            lines = []
+            for r in ("E", "D", "C"):
+                b = base.get(r, 0)
+                e = effective.get(r, 0)
+                if e != b:
+                    lines.append(f"**{r}**: {b} → **{e}** (October boost)")
+                else:
+                    lines.append(f"**{r}**: {b}")
+
+            base_total = sum(base.values())
+            eff_total = sum(effective.values())
+
+            embed = discord.Embed(
+                title="🎲 Global Rank Spawn Rates",
+                description="\n".join(lines),
+                color=discord.Color.blue()
+            )
+            embed.add_field(
+                name="Base total",
+                value=str(base_total),
+                inline=True
+            )
+            embed.add_field(
+                name="Effective total",
+                value=str(eff_total),
+                inline=True
+            )
+            embed.add_field(
+                name="October D multiplier",
+                value=f"×{mult}" + (" (inactive — not October)" if get_local_now().month != 10 else " (active)"),
+                inline=False
+            )
+            embed.set_footer(text="Commands: >rankrate set <E|D|C> <value> · >rankrate october <mult> · >rankrate reset")
+            await ctx.send(embed=embed)
+            return
+
+        cmd = parts[0].lower()
+
+        # ---- reset ----
+        if cmd == "reset":
+            set_config(GLOBAL_CONFIG_ID, "rank_rates", dict(DEFAULT_RANK_RATES))
+            set_config(GLOBAL_CONFIG_ID, "october_d_multiplier", DEFAULT_OCTOBER_D_MULT)
+            await ctx.send(
+                f"✅ Rates reset to defaults: "
+                f"E={DEFAULT_RANK_RATES['E']}, D={DEFAULT_RANK_RATES['D']}, C={DEFAULT_RANK_RATES['C']} "
+                f"(October D ×{DEFAULT_OCTOBER_D_MULT})."
+            )
+            return
+
+        # ---- october <multiplier> ----
+        if cmd == "october":
+            if len(parts) < 2:
+                await ctx.send("❌ Uso: `>rankrate october <multiplier>` (ej. `2` para duplicar D en octubre, `1` para desactivar).")
+                return
+            try:
+                mult = float(parts[1])
+                if mult < 0:
+                    raise ValueError
+            except ValueError:
+                await ctx.send("❌ El multiplicador debe ser un número ≥ 0.")
+                return
+            set_config(GLOBAL_CONFIG_ID, "october_d_multiplier", mult)
+            if mult == 1:
+                await ctx.send("✅ October D boost **disabled** (multiplier = 1).")
+            else:
+                await ctx.send(f"✅ October D multiplier set to **×{mult}**.")
+            return
+
+        # ---- set <rank> <value> ----
+        if cmd == "set":
+            if len(parts) < 3:
+                await ctx.send("❌ Uso: `>rankrate set <E|D|C> <value>` (ej. `>rankrate set D 150`).")
+                return
+            rank = parts[1].upper()
+            if rank not in ("E", "D", "C"):
+                await ctx.send("❌ El rank debe ser `E`, `D` o `C`.")
+                return
+            try:
+                value = int(parts[2])
+                if value < 0:
+                    raise ValueError
+            except ValueError:
+                await ctx.send("❌ El valor debe ser un número entero ≥ 0.")
+                return
+
+            cfg = get_rank_rate_config()
+            rates = dict(cfg["rates"])
+            rates[rank] = value
+            set_config(GLOBAL_CONFIG_ID, "rank_rates", rates)
+
+            total = sum(rates.values())
+            await ctx.send(
+                f"✅ **{rank}** = {value}.\n"
+                f"New base rates: E={rates.get('E', 0)}, D={rates.get('D', 0)}, C={rates.get('C', 0)} (sum {total})."
+            )
+            return
+
+        # ---- Unknown subcommand → usage help ----
+        await ctx.send(
+            "**Uso de `>rankrate`:**\n"
+            "`>rankrate` — Ver los rates actuales\n"
+            "`>rankrate set <E|D|C> <value>` — Cambiar el rate base de un rank\n"
+            "`>rankrate october <multiplier>` — Multiplicador de D en octubre (1 = desactivar)\n"
+            "`>rankrate reset` — Restaurar los defaults"
+        )
+
     @commands.command(aliases=["refresh", "qr", "quick_refresh"])
     @commands.has_permissions(administrator=True)
     async def refresh_items(self, ctx):
@@ -504,6 +642,16 @@ class BotCommands(commands.Cog):
                 "**addalias** `ruta_canonica` `alias` — Añade un alias personalizado para una ruta.\n"
                 "**removealias** `alias` — Elimina un alias personalizado.\n"
                 "**set_daruma_channel** `#canal` — Canal de anuncios de intercambios de Daruma."
+            ),
+            inline=False
+        )
+        embed.add_field(
+            name="🎲 Rank Rates (Global) ⚙️",
+            value=(
+                "**rankrate** — Muestra los rates actuales de spawn por rank.\n"
+                "**⚙️ rankrate set** `<E|D|C>` `<valor>` — Cambia el rate base de un rank.\n"
+                "**⚙️ rankrate october** `<mult>` — Multiplicador del rank D durante octubre.\n"
+                "**⚙️ rankrate reset** — Restaura los rates por defecto."
             ),
             inline=False
         )

@@ -155,6 +155,20 @@ BUILTIN_ALIASES = {
         "randen station",
         "abandoned randen",
         "randen"
+    ],
+        "Fizzy Swamp": [
+        "Soda Swamp",
+        "Pantano de Soda",
+        "Pantano Burbujeante"
+    ],
+        "UBM.42 Frequency": [
+        "UBM.42",
+        "Radio Tower",
+        "UBM.42 Radio Tower",
+        "Torre de Radio UBM.42",
+        "Frecuencia UBM.42",
+        "UBM.42 Station",
+        "UBM.42 Tower"
     ]
 }
 

@@ -5,7 +5,7 @@ import asyncio
 import discord
 import re
 from datetime import datetime, timezone, timedelta
-from .config import supabase, get_guild_cfg, set_config
+from .config import supabase, get_guild_cfg, set_config, config_cache
 from .utils import get_local_now, get_current_week_range, get_current_week_start_str, get_weekly_log_path, utc_now_iso
 from .items import load_items_table
 from .routes import match_route
@@ -15,6 +15,85 @@ from .views import invalidate_all_caches, preload_caches
 
 scan_locks = {}
 RPFORGE_BOT_ID = 1230402077747056641
+
+# ---------------------------------------------------------------------------
+# Global rank-rate configuration
+#
+# Stored in the `config` table under guild_id = "GLOBAL". This is the same
+# table used for per-guild bot config, so no schema changes are needed. The
+# GLOBAL row is intentionally never touched by get_guild_cfg(), and the
+# background tasks that iterate config_cache (e.g. scan_busquedas_thread) skip
+# it because int("GLOBAL") raises.
+#
+# Default rates are the pre-existing values from roll_tier_mercy:
+#   E = 280, D = 100, C = 20   (total 400)
+#
+# The `october_d_multiplier` defaults to 2.0, so during October D base is
+# doubled (100 → 200) and the extra is taken from E first, then C.
+# ---------------------------------------------------------------------------
+
+GLOBAL_CONFIG_ID = "GLOBAL"
+DEFAULT_RANK_RATES = {"E": 280, "D": 100, "C": 20}
+DEFAULT_OCTOBER_D_MULT = 2.0
+
+
+def get_rank_rate_config() -> dict:
+    """Read the global rank-rate config from the in-memory config cache.
+
+    Returns a dict {"rates": {"E": int, "D": int, "C": int},
+                    "october_d_multiplier": float}.
+    """
+    entry = config_cache.get(GLOBAL_CONFIG_ID)
+    data = (entry or {}).get("data") or {}
+
+    rates = dict(DEFAULT_RANK_RATES)
+    saved = data.get("rank_rates")
+    if isinstance(saved, dict):
+        for k in ("E", "D", "C"):
+            v = saved.get(k)
+            if isinstance(v, (int, float)):
+                rates[k] = int(v)
+            elif isinstance(v, str):
+                try:
+                    rates[k] = int(v)
+                except ValueError:
+                    pass
+
+    oct_mult = data.get("october_d_multiplier", DEFAULT_OCTOBER_D_MULT)
+    try:
+        oct_mult = float(oct_mult)
+    except (TypeError, ValueError):
+        oct_mult = DEFAULT_OCTOBER_D_MULT
+
+    return {"rates": rates, "october_d_multiplier": oct_mult}
+
+
+def get_effective_rank_rates() -> dict:
+    """Return the rank rates with the October D boost applied if active.
+
+    """
+    cfg = get_rank_rate_config()
+    rates = dict(cfg["rates"])
+
+    if get_local_now().month == 10:
+        mult = cfg.get("october_d_multiplier", DEFAULT_OCTOBER_D_MULT)
+        if mult and mult != 1:
+            base_d = rates.get("D", DEFAULT_RANK_RATES["D"])
+            new_d = int(round(base_d * mult))
+            extra = new_d - base_d
+            if extra > 0:
+                e = rates.get("E", DEFAULT_RANK_RATES["E"])
+                if e >= extra:
+                    rates["E"] = e - extra
+                else:
+                    remaining = extra - e
+                    rates["E"] = 0
+                    c = rates.get("C", DEFAULT_RANK_RATES["C"])
+                    rates["C"] = max(0, c - remaining)
+                rates["D"] = new_d
+
+    return rates
+
 
 # ---------------------------------------------------------------------------
 # Scan lock helper
@@ -99,18 +178,28 @@ async def save_dirty_mercy():
 # Mercy rolling function
 # ---------------------------------------------------------------------------
 def roll_tier_mercy(streak_d: int, streak_c: int):
-    D_RANGE = 100 + streak_d * 4
-    C_RANGE = 20 + streak_c * 2
-    E_RANGE = 400 - D_RANGE - C_RANGE
+    """Roll a tier using configurable base rates + mercy streak bonuses.
+    """
+    base = get_effective_rank_rates()
+    TOTAL = base["E"] + base["D"] + base["C"]
+    if TOTAL <= 0:
+        # Safety fallback
+        return "E", 0
+
+    D_RANGE = base["D"] + streak_d * 4
+    C_RANGE = base["C"] + streak_c * 2
+    E_RANGE = TOTAL - D_RANGE - C_RANGE
 
     if E_RANGE < 0:
         total_bonus = D_RANGE + C_RANGE
-        scale = 400 / total_bonus
+        if total_bonus <= 0:
+            return "E", 0
+        scale = TOTAL / total_bonus
         D_RANGE = int(D_RANGE * scale)
-        C_RANGE = 400 - D_RANGE
+        C_RANGE = TOTAL - D_RANGE
         E_RANGE = 0
 
-    roll = random.randint(1, 400)
+    roll = random.randint(1, TOTAL)
     if roll <= E_RANGE:
         return "E", roll
     elif roll <= E_RANGE + D_RANGE:
