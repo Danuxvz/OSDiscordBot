@@ -259,6 +259,7 @@ class BotCommands(commands.Cog):
             DEFAULT_OCTOBER_D_MULT,
             GLOBAL_CONFIG_ID,
         )
+        from .utils import get_local_now
 
         args = args.strip()
         parts = args.split()
